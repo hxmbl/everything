@@ -63,7 +63,7 @@ Positional args work too — the first non-flag argument is treated as the outpu
 
 ```bash
 # Feed your Go project to an LLM
-everything --output context.txt
+everything --output context.txt # or .log
 
 # Exclude noise
 everything --exclude "vendor,*.pb.go,node_modules" --no-binary --output prompt.txt
