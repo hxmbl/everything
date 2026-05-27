@@ -275,6 +275,10 @@ func shouldSkipDir(name string, cfg *Config) bool {
 }
 
 func shouldSkipFile(path, name string, cfg *Config) bool {
+	if name == ".DS_Store" || strings.HasPrefix(name, "._") {
+		return true
+	}
+
 	abs, _ := filepath.Abs(path)
 
 	if cfg.Exclude[name] || cfg.Exclude[path] || cfg.Exclude[abs] {
