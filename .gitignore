@@ -4,3 +4,4 @@ dist/
 
 # Wow ok AI autocomplete did not do anything.
 .DS_Store
+audit.txt
