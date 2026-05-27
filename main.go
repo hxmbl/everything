@@ -17,11 +17,11 @@ type Config struct {
 	Exclude    map[string]bool
 
 	MaxSize  int64
-	NoBinary bool
 
 	IgnoreGit  bool
 	IgnoreVenv bool
 	Force      bool
+	IncludeBinaries bool
 }
 
 func tryPrintTree(writer io.Writer) {
@@ -72,12 +72,11 @@ func main() {
 			return nil
 		}
 
-		data, err := os.ReadFile(path)
+		data, err := readFileFiltered(path, cfg.IncludeBinaries)
 		if err != nil {
 			return nil
 		}
-
-		if cfg.NoBinary && isBinary(data) {
+		if data == nil {
 			return nil
 		}
 
@@ -101,6 +100,11 @@ func parseArgs() *Config {
 	cfg := &Config{
 		Exclude:    make(map[string]bool),
 		IgnoreVenv: true,
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		cfg.Exclude[exe] = true
+		cfg.Exclude[filepath.Base(exe)] = true
 	}
 
 	args := os.Args[1:]
@@ -131,7 +135,10 @@ func parseArgs() *Config {
 			cfg.IgnoreVenv = false
 
 		case "--no-binary":
-			cfg.NoBinary = true
+			// no-op: binaries are skipped by default now
+
+		case "--include-binaries":
+			cfg.IncludeBinaries = true
 
 		case "--force", "--overwrite":
 			cfg.Force = true
@@ -170,20 +177,21 @@ Usage:
   everything [flags] [output-path]
 
 Flags:
-  --output <path>     Write to file (auto-excluded from scan)
-  --exclude <list>    Comma-separated names/paths to skip
-  --max-size <size>   Skip files larger than this (e.g. 1MB, 500KB)
-  --no-binary         Skip binary files (files containing null bytes)
-  --force             Overwrite existing output file
-  --ignore-git        Skip .git directory
-  --ignore-venv       (default) Skip .venv, venv, __pycache__, node_modules
-  --include-venv      Don't skip venv/pycache/node_modules
-  --version, -v       Show version
-  --help, -h          Show this help
+  --output <path>        Write to file (auto-excluded from scan)
+  --exclude <list>       Comma-separated names/paths to skip
+  --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
+  --include-binaries     Include binary files (skipped by default)
+  --force                Overwrite existing output file
+  --ignore-git           Skip .git directory
+  --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
+  --include-venv         Don't skip venv/pycache/node_modules
+  --version, -v          Show version
+  --help, -h             Show this help
 
 Examples:
   everything > out.txt
-  everything --output context.txt --no-binary
+  everything --output context.txt
+  everything --output context.txt --include-binaries
   everything --exclude "node_modules,.git" --max-size 1MB`)
 }
 
@@ -292,11 +300,85 @@ func shouldSkipFile(path, name string, cfg *Config) bool {
 // HELPERS
 //
 
-func isBinary(data []byte) bool {
-	for _, b := range data {
+const peekSize = 8192
+
+func readFileFiltered(path string, includeBinaries bool) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	peek := make([]byte, peekSize)
+	n, err := io.ReadFull(f, peek)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	peek = peek[:n]
+
+	if !includeBinaries && isBinary(peek) {
+		return nil, nil
+	}
+
+	if n < peekSize {
+		return peek, nil
+	}
+
+	rest, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(peek, rest...), nil
+}
+
+func hasMagic(peek, magic []byte) bool {
+	if len(peek) < len(magic) {
+		return false
+	}
+	for i, b := range magic {
+		if peek[i] != b {
+			return false
+		}
+	}
+	return true
+}
+
+func isBinary(peek []byte) bool {
+	magics := [][]byte{
+		{0x7f, 'E', 'L', 'F'},
+		{'M', 'Z'},
+		{'%', 'P', 'D', 'F'},
+		{0x89, 'P', 'N', 'G'},
+		{'P', 'K', 0x03, 0x04},
+		{0x1f, 0x8b},
+		{0x42, 0x5a},
+		{0xfd, 0x37, 0x7a, 0x58, 0x5a},
+		{0xfe, 0xed, 0xfa, 0xce},
+		{0xfe, 0xed, 0xfa, 0xcf},
+		{0xce, 0xfa, 0xed, 0xfe},
+		{0xcf, 0xfa, 0xed, 0xfe},
+	}
+	for _, m := range magics {
+		if hasMagic(peek, m) {
+			return true
+		}
+	}
+
+	for _, b := range peek {
 		if b == 0 {
 			return true
 		}
 	}
-	return false
+
+	if len(peek) == 0 {
+		return false
+	}
+	controlCount := 0
+	for _, b := range peek {
+		if b < 0x20 && b != 0x09 && b != 0x0a && b != 0x0d {
+			controlCount++
+		}
+	}
+	return float64(controlCount)/float64(len(peek)) > 0.10
 }
