@@ -294,7 +294,7 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
-	if base == ".git" {
+	if base == ".git" || strings.HasPrefix(path, ".git"+string(filepath.Separator)) || strings.HasPrefix(abs, ".git"+string(filepath.Separator)) {
 		return true
 	}
 
