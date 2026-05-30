@@ -18,10 +18,19 @@ type Config struct {
 
 	MaxSize  int64
 
-	IgnoreGit  bool
-	IgnoreVenv bool
-	Force      bool
+	IgnoreGit      bool
+	IgnoreVenv     bool
+	Force          bool
 	IncludeBinaries bool
+	StdoutSafe     bool
+}
+
+func isInteractive() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func tryPrintTree(writer io.Writer) {
@@ -40,6 +49,16 @@ func tryPrintTree(writer io.Writer) {
 func main() {
 	cfg := parseArgs()
 
+	if cfg.OutputPath == "" && isInteractive() && !cfg.StdoutSafe {
+		fmt.Fprintln(os.Stderr, "Warning: large stdout dumps can break shell input. Use --output or pipe to less.")
+		fmt.Fprintln(os.Stderr, "Tip: everything | less")
+	}
+
+	if cfg.OutputPath == "" && isInteractive() && cfg.StdoutSafe && !cfg.Force {
+		fmt.Fprintln(os.Stderr, "Refusing unsafe raw stdout dump. Use --output or --force.")
+		os.Exit(1)
+	}
+
 	writer, cleanup := setupOutput(cfg)
 	defer cleanup()
 
@@ -50,16 +69,14 @@ func main() {
 			return nil
 		}
 
-		name := d.Name()
-
-		if d.IsDir() {
-			if shouldSkipDir(name, cfg) {
+		if shouldSkip(path, d, cfg) {
+			if d.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
-		if shouldSkipFile(path, name, cfg) {
+		if d.IsDir() {
 			return nil
 		}
 
@@ -140,6 +157,9 @@ func parseArgs() *Config {
 		case "--include-binaries":
 			cfg.IncludeBinaries = true
 
+		case "--stdout-safe":
+			cfg.StdoutSafe = true
+
 		case "--force", "--overwrite":
 			cfg.Force = true
 
@@ -185,12 +205,13 @@ Flags:
   --ignore-git           Skip .git directory
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
+  --stdout-safe          Require --output in interactive shells
   --version, -v          Show version
   --help, -h             Show this help
 
 Examples:
-  everything > out.txt
-  everything --output context.txt
+  everything --output snapshot.txt   (recommended)
+  everything | less                  (safe viewing)
   everything --output context.txt --include-binaries
   everything --exclude "node_modules,.git" --max-size 1MB`)
 }
@@ -244,6 +265,11 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 	cfg.Exclude[absOut] = true
 	cfg.Exclude[filepath.Base(cfg.OutputPath)] = true
 
+	absProj, _ := filepath.Abs(".")
+	if strings.HasPrefix(absOut, filepath.Clean(absProj)+string(filepath.Separator)) {
+		cfg.Exclude[absOut] = true
+	}
+
 	if !cfg.Force {
 		if _, err := os.Stat(cfg.OutputPath); err == nil {
 			fmt.Println("Refusing to overwrite existing file:", cfg.OutputPath)
@@ -260,36 +286,29 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 }
 
 //
-// IGNORE LOGIC (centralised = important improvement)
+// SKIP LOGIC (unified = single source of truth)
 //
 
-func shouldSkipDir(name string, cfg *Config) bool {
-	if cfg.IgnoreGit && name == ".git" {
+func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
+	base := d.Name()
+	abs, _ := filepath.Abs(path)
+
+	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
+		return true
+	}
+
+	if cfg.IgnoreGit && base == ".git" {
 		return true
 	}
 
 	if cfg.IgnoreVenv {
-		switch name {
+		switch base {
 		case ".venv", "venv", "__pycache__", "node_modules":
 			return true
 		}
 	}
 
-	if cfg.Exclude[name] {
-		return true
-	}
-
-	return false
-}
-
-func shouldSkipFile(path, name string, cfg *Config) bool {
-	if name == ".DS_Store" || strings.HasPrefix(name, "._") {
-		return true
-	}
-
-	abs, _ := filepath.Abs(path)
-
-	if cfg.Exclude[name] || cfg.Exclude[path] || cfg.Exclude[abs] {
+	if cfg.Exclude[base] || cfg.Exclude[path] || cfg.Exclude[abs] {
 		return true
 	}
 
