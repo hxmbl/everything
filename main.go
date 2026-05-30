@@ -18,7 +18,6 @@ type Config struct {
 
 	MaxSize  int64
 
-	IgnoreGit      bool
 	IgnoreVenv     bool
 	Force          bool
 	IncludeBinaries bool
@@ -51,11 +50,11 @@ func main() {
 
 	if cfg.OutputPath == "" && isInteractive() && !cfg.StdoutSafe {
 		fmt.Fprintln(os.Stderr, "Warning: large stdout dumps can break shell input. Use --output or pipe to less.")
-		fmt.Fprintln(os.Stderr, "Tip: everything | less")
+		fmt.Fprintln(os.Stderr, "Tip: everything --output snapshot.txt")
 	}
 
 	if cfg.OutputPath == "" && isInteractive() && cfg.StdoutSafe && !cfg.Force {
-		fmt.Fprintln(os.Stderr, "Refusing unsafe raw stdout dump. Use --output or --force.")
+		fmt.Fprintln(os.Stderr, "Refusing unsafe raw stdout dump. Use --output to write to a file.")
 		os.Exit(1)
 	}
 
@@ -142,9 +141,6 @@ func parseArgs() *Config {
 				cfg.OutputPath = args[i]
 			}
 
-		case "--ignore-git":
-			cfg.IgnoreGit = true
-
 		case "--ignore-venv":
 			cfg.IgnoreVenv = true
 
@@ -202,18 +198,19 @@ Flags:
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
   --include-binaries     Include binary files (skipped by default)
   --force                Overwrite existing output file
-  --ignore-git           Skip .git directory
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
   --stdout-safe          Require --output in interactive shells
   --version, -v          Show version
   --help, -h             Show this help
 
+Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
+
 Examples:
   everything --output snapshot.txt   (recommended)
   everything | less                  (safe viewing)
   everything --output context.txt --include-binaries
-  everything --exclude "node_modules,.git" --max-size 1MB`)
+  everything --exclude "node_modules" --max-size 1MB`)
 }
 
 func parseSize(s string) int64 {
@@ -272,7 +269,7 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 
 	if !cfg.Force {
 		if _, err := os.Stat(cfg.OutputPath); err == nil {
-			fmt.Println("Refusing to overwrite existing file:", cfg.OutputPath)
+			fmt.Fprintf(os.Stderr, "Refusing to overwrite existing file: %s. Use --force to overwrite.\n", cfg.OutputPath)
 			os.Exit(1)
 		}
 	}
@@ -297,7 +294,7 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
-	if cfg.IgnoreGit && base == ".git" {
+	if base == ".git" {
 		return true
 	}
 

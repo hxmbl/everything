@@ -30,14 +30,11 @@ Real use cases people actually use this for:
 ## Quick start
 
 ```bash
-# Dump everything to stdout
-everything
-
-# Save to a file
-everything > snapshot.txt
-
-# Or be all fancy and formal and use the flag
+# Dump everything to a file (recommended)
 everything --output snapshot.txt
+
+# Or pipe to less for safe viewing
+everything | less
 ```
 
 ---
@@ -49,11 +46,11 @@ everything --output snapshot.txt
 | `--output <path>` | Write to file (auto-excludes itself from scan) | `everything --output out.txt` |
 | `--exclude <list>` | Comma-separated names/paths to skip | `--exclude "*.exe,secrets.txt"` |
 | `--max-size <n>` | Skip files larger than this | `--max-size 1MB` or `--max-size 500KB` |
-| `--no-binary` | Skip files containing null bytes | `--no-binary` |
+| `--include-binaries` | Include binary files (skipped by default) | `--include-binaries` |
 | `--force` or `--overwrite` | Overwrite existing output file | `--force`/`--overwrite` |
-| `--ignore-git` | Skip `.git/` directory | `--ignore-git` |
 | `--ignore-venv` | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv` |
 | `--include-venv` | Disable auto-venv skipping | `--include-venv` |
+| `--stdout-safe` | Require `--output` in interactive shells | `--stdout-safe` |
 
 Positional args work too — the first non-flag argument is treated as the output path.
 
@@ -63,16 +60,16 @@ Positional args work too — the first non-flag argument is treated as the outpu
 
 ```bash
 # Feed your Go project to an LLM
-everything --output context.txt # or .log
+everything --output context.txt
 
 # Exclude noise
-everything --exclude "vendor,*.pb.go,node_modules" --no-binary --output prompt.txt
+everything --exclude "vendor,*.pb.go" --output prompt.txt
 
 # Pipe directly into grep
 everything | grep "TODO\|FIXME\|HACK"
 
 # Skip large generated files
-everything --max-size 100KB --no-binary --output clean.txt
+everything --max-size 100KB --output clean.txt
 
 # Share project structure + contents
 everything --output audit.txt
@@ -85,9 +82,11 @@ everything --output audit.txt
 
 ## What gets skipped automatically
 
-The output file itself (so it doesn't eat itself — no infinite loops). Edit the code if you like logic bombs.
-Binary files **if** you pass `--no-binary`.
-Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`). <-- On a good day. If it feels like it.
+The output file itself (so it doesn't eat itself — no infinite loops).
+The running binary (so it doesn't dump itself).
+`.git/`, `.DS_Store`, `._*` files (always).
+Binary files (unless you pass `--include-binaries`).
+Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
 
 ---
 
