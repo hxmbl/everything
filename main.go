@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-var version = "release-0.13"
+var version = "v0.15.3"
 
 type Config struct {
 	OutputPath string
