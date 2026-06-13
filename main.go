@@ -14,6 +14,7 @@ var version = "release-0.13"
 
 type Config struct {
 	OutputPath string
+	InputDirs  []string
 	Exclude    map[string]bool
 
 	MaxSize  int64
@@ -63,48 +64,55 @@ func main() {
 
 	tryPrintTree(writer)
 
-	err := filepath.WalkDir(".", func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
+	walkDirs := cfg.InputDirs
+	if len(walkDirs) == 0 {
+		walkDirs = []string{"."}
+	}
 
-		if shouldSkip(path, d, cfg) {
-			if d.IsDir() {
-				return filepath.SkipDir
+	for _, root := range walkDirs {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
 			}
-			return nil
-		}
 
-		if d.IsDir() {
-			return nil
-		}
+			if shouldSkip(path, d, cfg) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
 
-		info, err := d.Info()
+			if d.IsDir() {
+				return nil
+			}
+
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+
+			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
+				return nil
+			}
+
+			data, err := readFileFiltered(path, cfg.IncludeBinaries)
+			if err != nil {
+				return nil
+			}
+			if data == nil {
+				return nil
+			}
+
+			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
+			writer.Write(data)
+			writer.Write([]byte("\n\n"))
+
+			return nil
+		})
+
 		if err != nil {
-			return nil
+			panic(err)
 		}
-
-		if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
-			return nil
-		}
-
-		data, err := readFileFiltered(path, cfg.IncludeBinaries)
-		if err != nil {
-			return nil
-		}
-		if data == nil {
-			return nil
-		}
-
-		fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-		writer.Write(data)
-		writer.Write([]byte("\n\n"))
-
-		return nil
-	})
-
-	if err != nil {
-		panic(err)
 	}
 }
 
@@ -128,10 +136,15 @@ func parseArgs() *Config {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 
-		// positional output
-		if !strings.HasPrefix(a, "-") && cfg.OutputPath == "" {
-			cfg.OutputPath = a
-			continue
+		if !strings.HasPrefix(a, "-") {
+			if info, err := os.Stat(a); err == nil && info.IsDir() {
+				cfg.InputDirs = append(cfg.InputDirs, a)
+				continue
+			}
+			if cfg.OutputPath == "" {
+				cfg.OutputPath = a
+				continue
+			}
 		}
 
 		switch a {
@@ -190,7 +203,11 @@ func printHelp() {
 	fmt.Println(`everything – dump your project into a flat file
 
 Usage:
-  everything [flags] [output-path]
+  everything [flags] [input-dirs...] [output-path]
+
+Positional arguments:
+  Existing directories are scanned as input.
+  A non-directory argument is used as the output path.
 
 Flags:
   --output <path>        Write to file (auto-excluded from scan)
@@ -209,6 +226,8 @@ Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
 Examples:
   everything --output snapshot.txt   (recommended)
   everything | less                  (safe viewing)
+  everything src/                    (scan src/ instead of .)
+  everything src/ lib/ --output ctx.txt  (scan multiple dirs)
   everything --output context.txt --include-binaries
   everything --exclude "node_modules" --max-size 1MB`)
 }
