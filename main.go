@@ -34,6 +34,7 @@ type Config struct {
 	Force           bool
 	IncludeBinaries bool
 	StdoutSafe      bool
+	ForceHighlight  bool
 
 	SyntaxHighlight bool
 	Theme           string
@@ -118,7 +119,7 @@ func main() {
 			}
 
 			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-			if cfg.SyntaxHighlight {
+			if cfg.SyntaxHighlight && (cfg.ForceHighlight || (cfg.OutputPath == "" && isInteractive())) {
 				lexer := lexers.Match(path)
 				if lexer == nil {
 					lexer = lexers.Fallback
@@ -213,6 +214,9 @@ func parseArgs() *Config {
 		case "--no-syntax-highlight":
 			cfg.SyntaxHighlight = false
 
+		case "--less":
+			cfg.ForceHighlight = true
+
 		case "--stdout-safe":
 			cfg.StdoutSafe = true
 
@@ -265,6 +269,7 @@ Flags:
   --theme <name>         Syntax highlighting theme (default: monokai)
   --list-themes          List available syntax highlighting themes
   --no-syntax-highlight  Don't attempt syntax highlighting (if you're into not having fun)
+  --less                 Force syntax highlighting (for piping to less -R)
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
   --stdout-safe          Require --output in interactive shells
@@ -276,6 +281,7 @@ Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
 Examples:
   everything --output snapshot.txt   (recommended)
   everything | less                  (safe viewing)
+  everything --less | less -R        (syntax highlighted in less)
   everything src/                    (scan src/ instead of .)
   everything src/ lib/ --output ctx.txt  (scan multiple dirs)
   everything --output context.txt --include-binaries
