@@ -35,6 +35,9 @@ everything --output snapshot.txt
 
 # Or pipe to less for safe viewing
 everything | less
+
+# Syntax highlighted in less (new!)
+everything --less | less -R
 ```
 
 ---
@@ -51,6 +54,8 @@ everything | less
 | `--ignore-venv` | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv` |
 | `--include-venv` | Disable auto-venv skipping | `--include-venv` |
 | `--stdout-safe` | Require `--output` in interactive shells | `--stdout-safe` |
+| `--less` | Force syntax highlighting (for piping to `less -R`) | `everything --less \| less -R` |
+| `--no-syntax-highlight` | Disable syntax highlighting | `--no-syntax-highlight` |
 
 Positional args work too — the first non-flag argument is treated as the output path.
 
@@ -120,6 +125,7 @@ go build -o everything && ./everything
 
 - This tool stays simple. If it ever gets complicated, something went seriously wrong.
 - The `tree` command output is included automatically if you have it installed. If not, it ghosts u.
+- Syntax highlighting is on by default when outputting to a terminal. Pipe to `less -R` with `--less` to keep the colors.
 - Note 3: yes
 
 ---
