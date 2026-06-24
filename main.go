@@ -10,6 +10,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
 )
 
 var version = "v0.15.3"
@@ -19,12 +24,12 @@ type Config struct {
 	InputDirs  []string
 	Exclude    map[string]bool
 
-	MaxSize  int64
+	MaxSize int64
 
-	IgnoreVenv     bool
-	Force          bool
+	IgnoreVenv      bool
+	Force           bool
 	IncludeBinaries bool
-	StdoutSafe     bool
+	StdoutSafe      bool
 
 	SyntaxHighlight bool
 }
@@ -108,10 +113,23 @@ func main() {
 			}
 
 			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-			// if SyntaxHighlight: {
-			//
-			// }
-			writer.Write(data)
+			if cfg.SyntaxHighlight {
+				lexer := lexers.Match(path)
+				if lexer == nil {
+					lexer = lexers.Fallback
+				}
+				lexer = chroma.Coalesce(lexer)
+				iterator, err := lexer.Tokenise(nil, string(data))
+				if err == nil {
+					formatter := formatters.Get("terminal")
+					if formatter == nil {
+						formatter = formatters.Fallback
+					}
+					formatter.Format(writer, styles.Get("monokai"), iterator)
+				}
+			} else {
+				writer.Write(data)
+			}
 			writer.Write([]byte("\n\n"))
 
 			return nil
@@ -129,8 +147,9 @@ func main() {
 
 func parseArgs() *Config {
 	cfg := &Config{
-		Exclude:    make(map[string]bool),
-		IgnoreVenv: true,
+		Exclude:         make(map[string]bool),
+		IgnoreVenv:      true,
+		SyntaxHighlight: true,
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -167,11 +186,11 @@ func parseArgs() *Config {
 		case "--include-venv":
 			cfg.IgnoreVenv = false
 
-		case "--no-binary":
-			// no-op: binaries are skipped by default now
-
-		case "--include-binaries":
+		case "--include-binary":
 			cfg.IncludeBinaries = true
+
+		case "--no-syntax-highlight":
+			cfg.SyntaxHighlight = false
 
 		case "--stdout-safe":
 			cfg.StdoutSafe = true
@@ -220,8 +239,9 @@ Flags:
   --output <path>        Write to file (auto-excluded from scan)
   --exclude <list>       Comma-separated names/paths to skip
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
-  --include-binaries     Include binary files (skipped by default)
+  --include-binary       Include binary files (skipped by default)
   --force                Overwrite existing output file
+  --no-syntax-highlight  Don't attempt syntax highlighting (if you're into not having fun)
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
   --stdout-safe          Require --output in interactive shells
