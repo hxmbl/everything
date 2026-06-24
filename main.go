@@ -25,6 +25,8 @@ type Config struct {
 	Force          bool
 	IncludeBinaries bool
 	StdoutSafe     bool
+
+	SyntaxHighlight bool
 }
 
 func isInteractive() bool {
@@ -106,6 +108,9 @@ func main() {
 			}
 
 			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
+			// if SyntaxHighlight: {
+			//
+			// }
 			writer.Write(data)
 			writer.Write([]byte("\n\n"))
 
