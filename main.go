@@ -1,3 +1,5 @@
+// TODO: Add Syntax highlighting for some reason
+
 package main
 
 import (
