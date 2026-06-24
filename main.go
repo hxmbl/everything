@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 
@@ -15,7 +16,12 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.15.4"
+var version = func() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
+		return info.Main.Version
+	}
+	return "dev"
+}()
 
 type Config struct {
 	OutputPath string
