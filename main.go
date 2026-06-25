@@ -1,4 +1,4 @@
-// TODO: Add Syntax highlighting for some reason
+// TODO: Add Syntax highlighting themes then leave it cause its doing too much 
 
 package main
 
