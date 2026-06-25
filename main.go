@@ -1,5 +1,3 @@
-// TODO: Add Syntax highlighting themes then leave it cause its doing too much 
-
 package main
 
 import (
@@ -17,7 +15,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.15.3"
+var version = "v0.15.4"
 
 type Config struct {
 	OutputPath string
@@ -32,6 +30,7 @@ type Config struct {
 	StdoutSafe      bool
 
 	SyntaxHighlight bool
+	Theme           string
 }
 
 func isInteractive() bool {
@@ -125,7 +124,11 @@ func main() {
 					if formatter == nil {
 						formatter = formatters.Fallback
 					}
-					formatter.Format(writer, styles.Get("monokai"), iterator)
+					themeName := cfg.Theme
+					if themeName == "" {
+						themeName = "monokai"
+					}
+					formatter.Format(writer, styles.Get(themeName), iterator)
 				}
 			} else {
 				writer.Write(data)
@@ -189,6 +192,18 @@ func parseArgs() *Config {
 		case "--include-binary":
 			cfg.IncludeBinaries = true
 
+		case "--theme":
+			i++
+			if i < len(args) {
+				cfg.Theme = args[i]
+			}
+
+		case "--list-themes":
+			for _, name := range styles.Names() {
+				fmt.Println(name)
+			}
+			os.Exit(0)
+
 		case "--no-syntax-highlight":
 			cfg.SyntaxHighlight = false
 
@@ -241,6 +256,8 @@ Flags:
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
   --include-binary       Include binary files (skipped by default)
   --force                Overwrite existing output file
+  --theme <name>         Syntax highlighting theme (default: monokai)
+  --list-themes          List available syntax highlighting themes
   --no-syntax-highlight  Don't attempt syntax highlighting (if you're into not having fun)
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
