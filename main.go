@@ -28,9 +28,7 @@ type Config struct {
 	Force           bool
 	IncludeBinaries bool
 	StdoutSafe      bool
-	ForceHighlight  bool
-
-	SyntaxHighlight bool
+	Color           bool
 	Theme           string
 }
 
@@ -113,7 +111,7 @@ func main() {
 			}
 
 			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-			if cfg.SyntaxHighlight && (cfg.ForceHighlight || (cfg.OutputPath == "" && isInteractive())) {
+			if cfg.Color {
 				lexer := lexers.Match(path)
 				if lexer == nil {
 					lexer = lexers.Fallback
@@ -151,9 +149,8 @@ func main() {
 
 func parseArgs() *Config {
 	cfg := &Config{
-		Exclude:         make(map[string]bool),
-		IgnoreVenv:      true,
-		SyntaxHighlight: true,
+		Exclude:    make(map[string]bool),
+		IgnoreVenv: true,
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -197,6 +194,7 @@ func parseArgs() *Config {
 			i++
 			if i < len(args) {
 				cfg.Theme = args[i]
+				cfg.Color = true
 			}
 
 		case "--list-themes":
@@ -205,11 +203,8 @@ func parseArgs() *Config {
 			}
 			os.Exit(0)
 
-		case "--no-syntax-highlight":
-			cfg.SyntaxHighlight = false
-
-		case "--less":
-			cfg.ForceHighlight = true
+		case "--color", "--highlight":
+			cfg.Color = true
 
 		case "--stdout-safe":
 			cfg.StdoutSafe = true
@@ -260,10 +255,9 @@ Flags:
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
   --include-binary       Include binary files (skipped by default)
   --force                Overwrite existing output file
-  --theme <name>         Syntax highlighting theme (default: monokai)
-  --list-themes          List available syntax highlighting themes
-  --no-syntax-highlight  Don't attempt syntax highlighting (if you're into not having fun)
-  --less                 Force syntax highlighting (for piping to less -R)
+  --color, --highlight   Enable syntax highlighting with color
+  --theme <name>         Color theme (implies --color; default: monokai)
+  --list-themes          List available color themes
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
   --stdout-safe          Require --output in interactive shells
@@ -275,7 +269,8 @@ Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
 Examples:
   everything --output snapshot.txt   (recommended)
   everything | less                  (safe viewing)
-  everything --less | less -R        (syntax highlighted in less)
+  everything --color --output out.txt
+  everything --theme dracula --output out.txt
   everything src/                    (scan src/ instead of .)
   everything src/ lib/ --output ctx.txt  (scan multiple dirs)
   everything --output context.txt --include-binaries

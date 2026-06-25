@@ -52,8 +52,8 @@ everything --output snapshot.txt
 # Or pipe to less for safe viewing
 everything | less
 
-# Syntax highlighted in less (new!)
-everything --less | less -R
+# Syntax highlighted output
+everything --color | less -R
 ```
 
 ---
@@ -67,10 +67,9 @@ everything --less | less -R
 | `--max-size <n>`           | Skip files larger than this                                  | `--max-size 1MB` or `--max-size 500KB` |
 | `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
 | `--force` or `--overwrite` | Overwrite existing output file                               | `--force`/`--overwrite`                |
-| `--theme <name>`           | Syntax highlighting theme (default: monokai)                 | `--theme dracula`                      |
-| `--list-themes`            | List all available syntax highlighting themes                | `--list-themes`                        |
-| `--no-syntax-highlight`    | Disable syntax highlighting                                  | `--no-syntax-highlight`                |
-| `--less`                   | Force syntax highlighting (for piping to `less -R`)          | `everything --less \| less -R`         |
+| `--color` or `--highlight` | Enable syntax highlighted output                             | `everything --color`                   |
+| `--theme <name>`           | Color theme (implies `--color`; default: monokai)            | `--theme dracula`                      |
+| `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
 | `--stdout-safe`            | Require `--output` in interactive shells                     | `--stdout-safe`                        |
@@ -133,7 +132,7 @@ Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
 
 - This tool stays simple. If it ever gets complicated, something went seriously wrong.
 - The `tree` command output is included automatically if you have it installed. If not, it ghosts u.
-- Syntax highlighting is on by default when outputting to a terminal. Pipe to `less -R` with `--less` to keep the colors.
+- Use `--color` to enable syntax highlighting. Pipe to `less -R` for paged colored output.
 - Note 3: yes
 
 ---
