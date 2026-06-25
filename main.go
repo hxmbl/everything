@@ -15,7 +15,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.17.1"
+var version = "v0.18.2"
 
 type Config struct {
 	OutputPath string
@@ -55,6 +55,12 @@ func tryPrintTree(writer io.Writer) {
 
 func main() {
 	cfg := parseArgs()
+
+	if cfg.Color && cfg.Theme == "" {
+		if t := loadSavedTheme(); t != "" {
+			cfg.Theme = t
+		}
+	}
 
 	if cfg.OutputPath == "" && isInteractive() && !cfg.StdoutSafe {
 		fmt.Fprintln(os.Stderr, "Warning: large stdout dumps can break shell input. Use --output or pipe to less.")
@@ -195,6 +201,7 @@ func parseArgs() *Config {
 			if i < len(args) {
 				cfg.Theme = args[i]
 				cfg.Color = true
+				saveTheme(cfg.Theme)
 			}
 
 		case "--list-themes":
@@ -461,4 +468,29 @@ func isBinary(peek []byte) bool {
 		}
 	}
 	return float64(controlCount)/float64(len(peek)) > 0.10
+}
+
+func themeCachePath() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(cacheDir, "everything", "theme")
+}
+
+func loadSavedTheme() string {
+	data, err := os.ReadFile(themeCachePath())
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func saveTheme(name string) {
+	path := themeCachePath()
+	if path == "" {
+		return
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, []byte(name), 0644)
 }
