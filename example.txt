@@ -1,0 +1,821 @@
+.
+├── example.txt
+├── go.mod
+├── go.sum
+├── main.go
+├── README.md
+└── winget
+    ├── manifests
+    │   └── h
+    │       └── Hx
+    │           └── Hxmbl.everything
+    │               └── 0.1.0
+    │                   ├── Hxmbl.everything.installer.yaml
+    │                   ├── Hxmbl.everything.locale.en-US.yaml
+    │                   └── Hxmbl.everything.yaml
+    └── README.md
+
+7 directories, 9 files
+
+==== FILE: .github/workflows/release.yml ====
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+==== FILE: .gitignore ====
+# Time to let AI fuck around in gitignore yay
+
+dist/
+.DS_Store
+audit.txt
+everything
+
+
+==== FILE: .goreleaser.yaml ====
+version: 2
+
+project_name: everything
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: ["tar.gz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - name: everything
+    repository:
+      owner: Hxmbl
+      name: homebrew-everything
+    commit_author:
+      name: hxmbl
+      email: hxmbl@users.noreply.github.com
+    homepage: https://github.com/Hxmbl/everything
+    description: Dump your entire project into a single file. Mostly for feeding code to LLMs.
+    license: MIT
+    test: |
+      system "#{bin}/everything --version"
+    skip_upload: true
+
+
+==== FILE: README.md ====
+# everything
+(vibecoded)
+
+Dump your entire project into a single file, mostly because you're about to feed it to an LLM, ran out of cursor credit, and can't be bothered to copy-paste 47 files.
+
+Recursively walks your directory and prints every file's path + contents. That's it. That's the tool.
+
+```
+everything > context-for-llm.txt
+```
+
+Works with any model. Works with any codebase. Zero dependencies (well, Go, but you already have that).
+
+
+
+## Installation
+
+Requires Go 1.20+.
+
+### go install (easiest)
+
+```bash
+go install github.com/hxmbl/everything@latest
+```
+
+### Homebrew (if i ever get to this)
+
+```bash
+brew install hxmbl/everything/everything
+```
+
+### Download a release binary
+
+Grab the right tarball from the [releases page](https://github.com/Hxmbl/everything/releases), extract it, and drop it in your PATH.
+
+### Build from source
+
+```bash
+git clone https://github.com/Hxmbl/everything
+cd everything
+go build -o everything && ./everything
+```
+
+
+
+## Quick start
+
+```bash
+# Dump everything to a file (recommended)
+everything --output snapshot.txt
+
+# Or pipe to less for safe viewing
+everything | less
+
+# Syntax highlighted output
+everything --color | less -R
+```
+
+---
+
+## Flags that actually exist
+
+| Flag                       | What it does                                                 | Example                                |
+| -------------------------- | ------------------------------------------------------------ | -------------------------------------- |
+| `--output <path>`          | Write to file (auto-excludes itself from scan)               | `everything --output out.txt`          |
+| `--exclude <list>`         | Comma-separated names/paths to skip                          | `--exclude "*.exe,secrets.txt"`        |
+| `--max-size <n>`           | Skip files larger than this                                  | `--max-size 1MB` or `--max-size 500KB` |
+| `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
+| `--force` or `--overwrite` | Overwrite existing output file                               | `--force`/`--overwrite`                |
+| `--color` or `--highlight` | Enable syntax highlighted output                             | `everything --color`                   |
+| `--theme <name>`           | Color theme (implies `--color`; default: monokai)            | `--theme dracula`                      |
+| `--list-themes`            | List all available color themes                              | `--list-themes`                        |
+| `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
+| `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
+| `--stdout-safe`            | Require `--output` in interactive shells                     | `--stdout-safe`                        |
+
+Positional args work too — the first non-flag argument is treated as the output path.
+
+---
+
+## Common workflows
+
+```bash
+# Feed your Go project to an LLM
+everything --output context.txt
+
+# Exclude noise
+everything --exclude "vendor,*.pb.go" --output prompt.txt
+
+# Pipe directly into grep
+everything | grep "TODO\|FIXME\|HACK"
+
+# Skip large generated files
+everything --max-size 100KB --output clean.txt
+
+# Share project structure + contents
+everything --output audit.txt
+# (tree output is included automatically if you have `tree` installed)
+```
+
+^ Have I ever actually done any of these? No. Do I plan to? No. But the options are there if you want them.
+
+---
+
+## 
+
+## Why this exists
+
+Don't know. Saves time everyone seemed to have anyway.
+
+Started as a bash alias. Went skidding. Now it's a Go binary that still does the same thing but with flags.
+
+Real use cases people actually use this for:
+- **Dumping code into LLM prompts** (the main one)
+- Code review prep
+- Quick project snapshots for sharing
+- "Where did I put that function?" full-text search (pipe it into `grep` — `everything | grep "func foo"`)  <-- Not like it's built into ur IDE or anything
+
+---
+
+## What gets skipped automatically
+
+The output file itself (so it doesn't eat itself — no infinite loops).
+The running binary (so it doesn't dump itself).
+`.git/`, `.DS_Store`, `._*` files (always).
+Binary files (unless you pass `--include-binaries`).
+Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
+
+---
+
+## Notes
+
+- This tool stays simple. If it ever gets complicated, something went seriously wrong.
+- The `tree` command output is included automatically if you have it installed. If not, it ghosts u.
+- Use `--color` to enable syntax highlighting. Pipe to `less -R` for paged colored output.
+- Note 3: yes
+
+---
+
+## License
+
+No.
+
+
+==== FILE: go.mod ====
+module github.com/hxmbl/everything
+
+go 1.26.2
+
+require (
+	github.com/alecthomas/chroma/v2 v2.27.0 // indirect
+	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
+)
+
+
+==== FILE: go.sum ====
+github.com/alecthomas/chroma/v2 v2.27.0 h1:FodwmyOBgJULFYmDqibcp9pvfDLWdtPRh9v/r5BXYZs=
+github.com/alecthomas/chroma/v2 v2.27.0/go.mod h1:NjJ3ciIgrqBNeIkWZ4e46nseoLDslxU1LmfCoL+wcY8=
+github.com/dlclark/regexp2/v2 v2.2.1 h1:mf4KkFUj0gJuarK8P+LgiS+Lit7m9N1yAwEfPbee7R0=
+github.com/dlclark/regexp2/v2 v2.2.1/go.mod h1:avUrQvPaLz2DrFNHJF0taWAFFX2C1GMSSoeiqFjcBmU=
+
+
+==== FILE: main.go ====
+package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/alecthomas/chroma/v2"
+	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/alecthomas/chroma/v2/lexers"
+	"github.com/alecthomas/chroma/v2/styles"
+)
+
+var version = "v0.17.1"
+
+type Config struct {
+	OutputPath string
+	InputDirs  []string
+	Exclude    map[string]bool
+
+	MaxSize int64
+
+	IgnoreVenv      bool
+	Force           bool
+	IncludeBinaries bool
+	StdoutSafe      bool
+	Color           bool
+	Theme           string
+}
+
+func isInteractive() bool {
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func tryPrintTree(writer io.Writer) {
+	cmd := exec.Command("tree", "-n")
+
+	cmd.Stdout = writer
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return
+	}
+
+	fmt.Fprint(writer, "\n")
+}
+
+func main() {
+	cfg := parseArgs()
+
+	if cfg.OutputPath == "" && isInteractive() && !cfg.StdoutSafe {
+		fmt.Fprintln(os.Stderr, "Warning: large stdout dumps can break shell input. Use --output or pipe to less.")
+		fmt.Fprintln(os.Stderr, "Tip: everything --output snapshot.txt")
+	}
+
+	if cfg.OutputPath == "" && isInteractive() && cfg.StdoutSafe && !cfg.Force {
+		fmt.Fprintln(os.Stderr, "Refusing unsafe raw stdout dump. Use --output to write to a file.")
+		os.Exit(1)
+	}
+
+	writer, cleanup := setupOutput(cfg)
+	defer cleanup()
+
+	tryPrintTree(writer)
+
+	walkDirs := cfg.InputDirs
+	if len(walkDirs) == 0 {
+		walkDirs = []string{"."}
+	}
+
+	for _, root := range walkDirs {
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+
+			if shouldSkip(path, d, cfg) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if d.IsDir() {
+				return nil
+			}
+
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+
+			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
+				return nil
+			}
+
+			data, err := readFileFiltered(path, cfg.IncludeBinaries)
+			if err != nil {
+				return nil
+			}
+			if data == nil {
+				return nil
+			}
+
+			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
+			if cfg.Color {
+				lexer := lexers.Match(path)
+				if lexer == nil {
+					lexer = lexers.Fallback
+				}
+				lexer = chroma.Coalesce(lexer)
+				iterator, err := lexer.Tokenise(nil, string(data))
+				if err == nil {
+					formatter := formatters.Get("terminal")
+					if formatter == nil {
+						formatter = formatters.Fallback
+					}
+					themeName := cfg.Theme
+					if themeName == "" {
+						themeName = "monokai"
+					}
+					formatter.Format(writer, styles.Get(themeName), iterator)
+				}
+			} else {
+				writer.Write(data)
+			}
+			writer.Write([]byte("\n\n"))
+
+			return nil
+		})
+
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+//
+// CONFIG
+//
+
+func parseArgs() *Config {
+	cfg := &Config{
+		Exclude:    make(map[string]bool),
+		IgnoreVenv: true,
+	}
+
+	if exe, err := os.Executable(); err == nil {
+		cfg.Exclude[exe] = true
+		cfg.Exclude[filepath.Base(exe)] = true
+	}
+
+	args := os.Args[1:]
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+
+		if !strings.HasPrefix(a, "-") {
+			if info, err := os.Stat(a); err == nil && info.IsDir() {
+				cfg.InputDirs = append(cfg.InputDirs, a)
+				continue
+			}
+			if cfg.OutputPath == "" {
+				cfg.OutputPath = a
+				continue
+			}
+		}
+
+		switch a {
+		case "--output":
+			i++
+			if i < len(args) {
+				cfg.OutputPath = args[i]
+			}
+
+		case "--ignore-venv":
+			cfg.IgnoreVenv = true
+
+		case "--include-venv":
+			cfg.IgnoreVenv = false
+
+		case "--include-binary":
+			cfg.IncludeBinaries = true
+
+		case "--theme":
+			i++
+			if i < len(args) {
+				cfg.Theme = args[i]
+				cfg.Color = true
+			}
+
+		case "--list-themes":
+			for _, name := range styles.Names() {
+				fmt.Println(name)
+			}
+			os.Exit(0)
+
+		case "--color", "--highlight":
+			cfg.Color = true
+
+		case "--stdout-safe":
+			cfg.StdoutSafe = true
+
+		case "--force", "--overwrite":
+			cfg.Force = true
+
+		case "--exclude":
+			i++
+			if i < len(args) {
+				for _, name := range strings.Split(args[i], ",") {
+					cfg.Exclude[strings.TrimSpace(name)] = true
+				}
+			}
+
+		case "--max-size":
+			i++
+			if i < len(args) {
+				cfg.MaxSize = parseSize(args[i])
+			}
+
+		case "--version", "-v":
+			fmt.Println("everything", version)
+			os.Exit(0)
+
+		case "--help", "-h":
+			printHelp()
+			os.Exit(0)
+		}
+	}
+
+	return cfg
+}
+
+func printHelp() {
+	fmt.Println(`everything – dump your project into a flat file
+
+Usage:
+  everything [flags] [input-dirs...] [output-path]
+
+Positional arguments:
+  Existing directories are scanned as input.
+  A non-directory argument is used as the output path.
+
+Flags:
+  --output <path>        Write to file (auto-excluded from scan)
+  --exclude <list>       Comma-separated names/paths to skip
+  --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
+  --include-binary       Include binary files (skipped by default)
+  --force                Overwrite existing output file
+  --color, --highlight   Enable syntax highlighting with color
+  --theme <name>         Color theme (implies --color; default: monokai)
+  --list-themes          List available color themes
+  --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
+  --include-venv         Don't skip venv/pycache/node_modules
+  --stdout-safe          Require --output in interactive shells
+  --version, -v          Show version
+  --help, -h             Show this help
+
+Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
+
+Examples:
+  everything --output snapshot.txt   (recommended)
+  everything | less                  (safe viewing)
+  everything --color --output out.txt
+  everything --theme dracula --output out.txt
+  everything src/                    (scan src/ instead of .)
+  everything src/ lib/ --output ctx.txt  (scan multiple dirs)
+  everything --output context.txt --include-binaries
+  everything --exclude "node_modules" --max-size 1MB`)
+}
+
+func parseSize(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+
+	s = strings.ToUpper(s)
+
+	var multiplier int64 = 1
+	switch {
+	case strings.HasSuffix(s, "TB"):
+		multiplier = 1 << 40
+		s = strings.TrimSuffix(s, "TB")
+	case strings.HasSuffix(s, "GB"):
+		multiplier = 1 << 30
+		s = strings.TrimSuffix(s, "GB")
+	case strings.HasSuffix(s, "MB"):
+		multiplier = 1 << 20
+		s = strings.TrimSuffix(s, "MB")
+	case strings.HasSuffix(s, "KB"):
+		multiplier = 1 << 10
+		s = strings.TrimSuffix(s, "KB")
+	case strings.HasSuffix(s, "B"):
+		multiplier = 1
+		s = strings.TrimSuffix(s, "B")
+	}
+
+	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	return n * multiplier
+}
+
+//
+// OUTPUT SAFETY
+//
+
+func setupOutput(cfg *Config) (io.Writer, func()) {
+	if cfg.OutputPath == "" {
+		return os.Stdout, func() {}
+	}
+
+	absOut, _ := filepath.Abs(cfg.OutputPath)
+
+	cfg.Exclude[absOut] = true
+	cfg.Exclude[filepath.Base(cfg.OutputPath)] = true
+
+	absProj, _ := filepath.Abs(".")
+	if strings.HasPrefix(absOut, filepath.Clean(absProj)+string(filepath.Separator)) {
+		cfg.Exclude[absOut] = true
+	}
+
+	if !cfg.Force {
+		if _, err := os.Stat(cfg.OutputPath); err == nil {
+			fmt.Fprintf(os.Stderr, "Refusing to overwrite existing file: %s. Use --force to overwrite.\n", cfg.OutputPath)
+			os.Exit(1)
+		}
+	}
+
+	f, err := os.Create(cfg.OutputPath)
+	if err != nil {
+		panic(err)
+	}
+
+	return f, func() { f.Close() }
+}
+
+//
+// SKIP LOGIC (unified = single source of truth)
+//
+
+func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
+	base := d.Name()
+	abs, _ := filepath.Abs(path)
+
+	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
+		return true
+	}
+
+	if base == ".git" || strings.HasPrefix(path, ".git"+string(filepath.Separator)) || strings.HasPrefix(abs, ".git"+string(filepath.Separator)) {
+		return true
+	}
+
+	if cfg.IgnoreVenv {
+		switch base {
+		case ".venv", "venv", "__pycache__", "node_modules":
+			return true
+		}
+	}
+
+	if cfg.Exclude[base] || cfg.Exclude[path] || cfg.Exclude[abs] {
+		return true
+	}
+
+	return false
+}
+
+//
+// HELPERS
+//
+
+const peekSize = 8192
+
+func readFileFiltered(path string, includeBinaries bool) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	peek := make([]byte, peekSize)
+	n, err := io.ReadFull(f, peek)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	peek = peek[:n]
+
+	if !includeBinaries && isBinary(peek) {
+		return nil, nil
+	}
+
+	if n < peekSize {
+		return peek, nil
+	}
+
+	rest, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(peek, rest...), nil
+}
+
+func hasMagic(peek, magic []byte) bool {
+	if len(peek) < len(magic) {
+		return false
+	}
+	for i, b := range magic {
+		if peek[i] != b {
+			return false
+		}
+	}
+	return true
+}
+
+func isBinary(peek []byte) bool {
+	magics := [][]byte{
+		{0x7f, 'E', 'L', 'F'},
+		{'M', 'Z'},
+		{'%', 'P', 'D', 'F'},
+		{0x89, 'P', 'N', 'G'},
+		{'P', 'K', 0x03, 0x04},
+		{0x1f, 0x8b},
+		{0x42, 0x5a},
+		{0xfd, 0x37, 0x7a, 0x58, 0x5a},
+		{0xfe, 0xed, 0xfa, 0xce},
+		{0xfe, 0xed, 0xfa, 0xcf},
+		{0xce, 0xfa, 0xed, 0xfe},
+		{0xcf, 0xfa, 0xed, 0xfe},
+	}
+	for _, m := range magics {
+		if hasMagic(peek, m) {
+			return true
+		}
+	}
+
+	for _, b := range peek {
+		if b == 0 {
+			return true
+		}
+	}
+
+	if len(peek) == 0 {
+		return false
+	}
+	controlCount := 0
+	for _, b := range peek {
+		if b < 0x20 && b != 0x09 && b != 0x0a && b != 0x0d {
+			controlCount++
+		}
+	}
+	return float64(controlCount)/float64(len(peek)) > 0.10
+}
+
+
+==== FILE: winget/README.md ====
+# winget submission
+
+To get `everything` into winget (Windows Package Manager):
+
+1. Fork https://github.com/microsoft/winget-pkgs
+2. Copy `manifests/h/Hx/Hxmbl.everything/` into your fork at the same path
+3. Open a PR — their bot validates the manifest and merges it
+
+After that, anyone on Windows can install with:
+```powershell
+winget install Hxmbl.everything
+```
+
+## Updating for new versions
+
+When you cut a new release:
+1. Update `PackageVersion` in all three manifest files
+2. Update the `InstallerUrl` and `InstallerSha256` in the installer manifest
+3. Get the new SHA256 from the release's `checksums.txt`
+4. Repeat the fork + PR process
+
+
+==== FILE: winget/manifests/h/Hx/Hxmbl.everything/0.1.0/Hxmbl.everything.installer.yaml ====
+PackageIdentifier: Hxmbl.everything
+PackageVersion: 0.1.0
+InstallerLocale: en-US
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: everything.exe
+    PortableCommandAlias: everything
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Hxmbl/everything/releases/download/v0.1.0/everything_0.1.0_Windows_x86_64.zip
+    InstallerSha256: 5e78497c195a41daa6847dc20f3c83c0c3cb1649edcdd8c616bc023e81590b32
+ManifestType: installer
+ManifestVersion: 1.6.0
+
+
+==== FILE: winget/manifests/h/Hx/Hxmbl.everything/0.1.0/Hxmbl.everything.locale.en-US.yaml ====
+PackageIdentifier: Hxmbl.everything
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Hxmbl
+PublisherUrl: https://github.com/Hxmbl
+PackageName: everything
+PackageUrl: https://github.com/Hxmbl/everything
+License: MIT
+ShortDescription: Dump your entire project into a single file. Mostly for feeding code to LLMs.
+Description: Recursively walks your directory and prints every file's path + contents. Useful for dumping code into LLM prompts, code review prep, or quick project snapshots.
+Tags:
+  - code
+  - dump
+  - llm
+  - project
+  - snapshot
+ManifestType: locale
+ManifestVersion: 1.6.0
+
+
+==== FILE: winget/manifests/h/Hx/Hxmbl.everything/0.1.0/Hxmbl.everything.yaml ====
+PackageIdentifier: Hxmbl.everything
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: singleton
+ManifestVersion: 1.6.0
+
+
