@@ -67,7 +67,8 @@ everything --color | less -R
 | `--max-size <n>`           | Skip files larger than this                                  | `--max-size 1MB` or `--max-size 500KB` |
 | `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
 | `--force` or `--overwrite` | Overwrite existing output file                               | `--force`/`--overwrite`                |
-| `--color` or `--highlight` | Enable syntax highlighted output                             | `everything --color`                   |
+| `--color` or `--highlight` | Enable syntax highlighted output (persisted)                 | `everything --color`                   |
+| `--no-color`               | Disable color output (persisted)                             | `everything --no-color`                |
 | `--theme <name>`           | Color theme (implies `--color`; default: monokai)            | `--theme dracula`                      |
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |

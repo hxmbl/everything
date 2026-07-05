@@ -15,7 +15,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.20.15"
+var version = "v0.21.0"
 
 type Config struct {
 	OutputPath string
@@ -173,6 +173,8 @@ func parseArgs() *Config {
 		cfg.Exclude[filepath.Base(exe)] = true
 	}
 
+	colorExplicit := false
+
 	args := os.Args[1:]
 
 	for i := 0; i < len(args); i++ {
@@ -192,9 +194,11 @@ func parseArgs() *Config {
 		switch a {
 		case "--output":
 			i++
-			if i < len(args) {
-				cfg.OutputPath = args[i]
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --output requires a file path argument")
+				os.Exit(1)
 			}
+			cfg.OutputPath = args[i]
 
 		case "--ignore-venv":
 			cfg.IgnoreVenv = true
@@ -207,11 +211,13 @@ func parseArgs() *Config {
 
 		case "--theme":
 			i++
-			if i < len(args) {
-				cfg.Theme = args[i]
-				cfg.Color = true
-				saveTheme(cfg.Theme)
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --theme requires a theme name argument")
+				os.Exit(1)
 			}
+			cfg.Theme = args[i]
+			cfg.Color = true
+			saveTheme(cfg.Theme)
 
 		case "--list-themes":
 			for _, name := range styles.Names() {
@@ -221,6 +227,13 @@ func parseArgs() *Config {
 
 		case "--color", "--highlight":
 			cfg.Color = true
+			colorExplicit = true
+			saveColor(true)
+
+		case "--no-color":
+			cfg.Color = false
+			colorExplicit = true
+			saveColor(false)
 
 		case "--stdout-safe":
 			cfg.StdoutSafe = true
@@ -233,17 +246,21 @@ func parseArgs() *Config {
 
 		case "--exclude":
 			i++
-			if i < len(args) {
-				for _, name := range strings.Split(args[i], ",") {
-					cfg.Exclude[strings.TrimSpace(name)] = true
-				}
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --exclude requires a comma-separated list argument")
+				os.Exit(1)
+			}
+			for _, name := range strings.Split(args[i], ",") {
+				cfg.Exclude[strings.TrimSpace(name)] = true
 			}
 
 		case "--max-size":
 			i++
-			if i < len(args) {
-				cfg.MaxSize = parseSize(args[i])
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --max-size requires a size argument (e.g. 1MB, 500KB)")
+				os.Exit(1)
 			}
+			cfg.MaxSize = parseSize(args[i])
 
 		case "--version", "-v":
 			fmt.Println("everything", version)
@@ -253,6 +270,10 @@ func parseArgs() *Config {
 			printHelp()
 			os.Exit(0)
 		}
+	}
+
+	if !colorExplicit && loadSavedColor() {
+		cfg.Color = true
 	}
 
 	return cfg
@@ -274,7 +295,8 @@ Flags:
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
   --include-binaries     Include binary files (skipped by default)
   --force                Overwrite existing output file
-  --color, --highlight   Enable syntax highlighting with color
+  --color, --highlight   Enable syntax highlighting with color (persisted)
+  --no-color             Disable color output (persisted)
   --theme <name>         Color theme (implies --color; default: monokai)
   --list-themes          List available color themes
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
@@ -488,6 +510,35 @@ func isBinary(peek []byte) bool {
 		}
 	}
 	return float64(controlCount)/float64(len(peek)) > 0.10
+}
+
+func colorCachePath() string {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(cacheDir, "everything", "color")
+}
+
+func loadSavedColor() bool {
+	data, err := os.ReadFile(colorCachePath())
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == "true"
+}
+
+func saveColor(on bool) {
+	path := colorCachePath()
+	if path == "" {
+		return
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	val := "false"
+	if on {
+		val = "true"
+	}
+	os.WriteFile(path, []byte(val), 0644)
 }
 
 func themeCachePath() string {
