@@ -15,7 +15,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.20.0"
+var version = "v0.20.1"
 
 type Config struct {
 	OutputPath string
@@ -202,7 +202,7 @@ func parseArgs() *Config {
 		case "--include-venv":
 			cfg.IgnoreVenv = false
 
-		case "--include-binary":
+		case "--include-binary", "--include-binaries":
 			cfg.IncludeBinaries = true
 
 		case "--theme":
@@ -272,7 +272,7 @@ Flags:
   --output <path>        Write to file (auto-excluded from scan)
   --exclude <list>       Comma-separated names/paths to skip
   --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
-  --include-binary       Include binary files (skipped by default)
+  --include-binaries     Include binary files (skipped by default)
   --force                Overwrite existing output file
   --color, --highlight   Enable syntax highlighting with color
   --theme <name>         Color theme (implies --color; default: monokai)
