@@ -38,6 +38,8 @@ jobs:
           git clone git@github.com:Hxmbl/homebrew-everything.git /tmp/homebrew-tap
           cp dist/homebrew/everything.rb /tmp/homebrew-tap/everything.rb
           cd /tmp/homebrew-tap
+          git config user.name "hxmbl"
+          git config user.email "hxmbl@users.noreply.github.com"
           git add everything.rb
           if git diff --cached --quiet; then
             echo "Formula unchanged, skipping commit"
