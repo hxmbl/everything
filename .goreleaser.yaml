@@ -56,4 +56,4 @@ brews:
     license: MIT
     test: |
       system "#{bin}/everything --version"
-    skip_upload: false
+    skip_upload: true
