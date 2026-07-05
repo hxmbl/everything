@@ -23,7 +23,6 @@ jobs:
       - uses: webfactory/ssh-agent@v0.9.1
         with:
           ssh-private-key: ${{ secrets.HOMEBREW_TAP_SSH_KEY }}
-      - run: git config --global url."git@github.com:Hxmbl/homebrew-everything.git".insteadOf "https://github.com/Hxmbl/homebrew-everything.git"
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -32,17 +31,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push Homebrew formula to tap
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          git clone git@github.com:Hxmbl/homebrew-everything.git /tmp/homebrew-tap
-          cp dist/everything.rb /tmp/homebrew-tap/everything.rb
-          cd /tmp/homebrew-tap
-          git add everything.rb
-          if git diff --cached --quiet; then
-            echo "Formula unchanged, skipping commit"
-          else
-            git commit -m "everything ${TAG}"
-            git push origin HEAD
-          fi
