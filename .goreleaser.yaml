@@ -48,8 +48,6 @@ brews:
     repository:
       owner: Hxmbl
       name: homebrew-everything
-      git:
-        url: git@github.com:Hxmbl/homebrew-everything.git
     commit_author:
       name: hxmbl
       email: hxmbl@users.noreply.github.com
@@ -58,4 +56,4 @@ brews:
     license: MIT
     test: |
       system "#{bin}/everything --version"
-    skip_upload: false
+    skip_upload: true
