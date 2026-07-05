@@ -23,7 +23,7 @@ Requires Go 1.20+.
 go install github.com/hxmbl/everything@latest
 ```
 
-### Homebrew (if i ever get to this)
+### Homebrew
 
 ```bash
 brew install hxmbl/everything/everything
