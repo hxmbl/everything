@@ -20,11 +20,10 @@ jobs:
         with:
           go-version: stable
 
-      # Uncomment after adding TAP_SSH_KEY secret and deploy key:
-      # - uses: webfactory/ssh-agent@v0.9.0
-      #   with:
-      #     ssh-private-key: ${{ secrets.TAP_SSH_KEY }}
-      # - run: git config --global url."git@github.com:Hxmbl/homebrew-everything.git".insteadOf "https://github.com/Hxmbl/homebrew-everything.git"
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.TAP_SSH_KEY }}
+      - run: git config --global url."git@github.com:Hxmbl/homebrew-everything.git".insteadOf "https://github.com/Hxmbl/homebrew-everything.git"
 
       - uses: goreleaser/goreleaser-action@v6
         with:

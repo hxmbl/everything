@@ -4,3 +4,5 @@ dist/
 .DS_Store
 audit.txt
 everything
+tap-key
+tap-key.pub
