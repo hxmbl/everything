@@ -72,6 +72,7 @@ everything --color | less -R
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
+| `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
 | `--stdout-safe`            | Require `--output` in interactive shells                     | `--stdout-safe`                        |
 
 Positional args work too — the first non-flag argument is treated as the output path.
@@ -123,6 +124,7 @@ Real use cases people actually use this for:
 The output file itself (so it doesn't eat itself — no infinite loops).
 The running binary (so it doesn't dump itself).
 `.git/`, `.DS_Store`, `._*` files (always).
+Symlinks (unless you pass `--follow-symlinks`).
 Binary files (unless you pass `--include-binaries`).
 Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
 
