@@ -56,4 +56,4 @@ brews:
     license: MIT
     test: |
       system "#{bin}/everything --version"
-    skip_upload: true
+    skip_upload: true # set to false after adding TAP_SSH_KEY secret + deploy key
