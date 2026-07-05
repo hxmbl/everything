@@ -30,6 +30,7 @@ type Config struct {
 	StdoutSafe      bool
 	Color           bool
 	Theme           string
+	FollowSymlinks  bool
 }
 
 func isInteractive() bool {
@@ -97,6 +98,14 @@ func main() {
 
 			if d.IsDir() {
 				return nil
+			}
+
+			fi, err := os.Lstat(path)
+			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				info, statErr := os.Stat(path)
+				if statErr == nil && info.IsDir() {
+					return nil
+				}
 			}
 
 			info, err := d.Info()
@@ -219,6 +228,9 @@ func parseArgs() *Config {
 		case "--force", "--overwrite":
 			cfg.Force = true
 
+		case "--follow-symlinks":
+			cfg.FollowSymlinks = true
+
 		case "--exclude":
 			i++
 			if i < len(args) {
@@ -267,11 +279,12 @@ Flags:
   --list-themes          List available color themes
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
+  --follow-symlinks      Include symlinks (skipped by default)
   --stdout-safe          Require --output in interactive shells
   --version, -v          Show version
   --help, -h             Show this help
 
-Always skipped: .git, .DS_Store, ._*, binaries (unless --include-binaries)
+Always skipped: .git, .DS_Store, ._*, symlinks (unless --follow-symlinks), binaries (unless --include-binaries)
 
 Examples:
   everything --output snapshot.txt   (recommended)
@@ -360,6 +373,13 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	base := d.Name()
 	abs, _ := filepath.Abs(path)
+
+	if !cfg.FollowSymlinks {
+		fi, err := os.Lstat(path)
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
 
 	if base == ".DS_Store" || strings.HasPrefix(base, "._") {
 		return true
