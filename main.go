@@ -15,7 +15,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.20.11"
+var version = "v0.20.12"
 
 type Config struct {
 	OutputPath string
