@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -413,9 +412,7 @@ func validateOutputPath(path string) error {
 func setupOutput(cfg *Config) (io.Writer, func()) {
 	if cfg.OutputPath == "" {
 		if fi, err := os.Stdout.Stat(); err == nil {
-			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-				cfg.stdoutInode = st.Ino
-			}
+			cfg.stdoutInode = getInode(fi)
 		}
 		return os.Stdout, func() {}
 	}
@@ -459,12 +456,8 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	abs, _ := filepath.Abs(path)
 
 	if cfg.stdoutInode != 0 {
-		if fi, err := os.Stat(path); err == nil {
-			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-				if st.Ino == cfg.stdoutInode {
-					return true
-				}
-			}
+		if fi, err := os.Stat(path); err == nil && getInode(fi) == cfg.stdoutInode {
+			return true
 		}
 	}
 
