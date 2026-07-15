@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,9 @@ type Config struct {
 	Color           bool
 	Theme           string
 	FollowSymlinks  bool
+	JSON            bool
+	OmittedDisclaimer bool
+	SkippedFiles    []string
 	stdoutInode     uint64
 }
 
@@ -78,7 +82,9 @@ func main() {
 	writer, cleanup := setupOutput(cfg)
 	defer cleanup()
 
-	tryPrintTree(writer)
+	if !cfg.JSON {
+		tryPrintTree(writer)
+	}
 
 	walkDirs := cfg.InputDirs
 	if len(walkDirs) == 0 {
@@ -104,8 +110,12 @@ func main() {
 
 			fi, err := os.Lstat(path)
 			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
-				info, statErr := os.Stat(path)
-				if statErr == nil && info.IsDir() {
+				if !cfg.FollowSymlinks {
+					cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  symlink: %s", path))
+					return nil
+				}
+				if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+					cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  dir symlink: %s", path))
 					return nil
 				}
 			}
@@ -116,6 +126,7 @@ func main() {
 			}
 
 			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
+				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  too large: %s (%d bytes)", path, info.Size()))
 				return nil
 			}
 
@@ -124,38 +135,57 @@ func main() {
 				return nil
 			}
 			if data == nil {
+				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  binary: %s", path))
 				return nil
 			}
 
-			fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-			if cfg.Color {
-				lexer := lexers.Match(path)
-				if lexer == nil {
-					lexer = lexers.Fallback
+			if cfg.JSON {
+				type jsonLine struct {
+					Path    string `json:"path"`
+					Content string `json:"content"`
 				}
-				lexer = chroma.Coalesce(lexer)
-				iterator, err := lexer.Tokenise(nil, string(data))
-				if err == nil {
-					formatter := formatters.Get("terminal")
-					if formatter == nil {
-						formatter = formatters.Fallback
-					}
-					themeName := cfg.Theme
-					if themeName == "" {
-						themeName = "monokai"
-					}
-					formatter.Format(writer, styles.Get(themeName), iterator)
-				}
+				b, _ := json.Marshal(jsonLine{Path: path, Content: string(data)})
+				writer.Write(b)
+				writer.Write([]byte("\n"))
 			} else {
-				writer.Write(data)
+				fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
+				if cfg.Color {
+					lexer := lexers.Match(path)
+					if lexer == nil {
+						lexer = lexers.Fallback
+					}
+					lexer = chroma.Coalesce(lexer)
+					iterator, err := lexer.Tokenise(nil, string(data))
+					if err == nil {
+						formatter := formatters.Get("terminal")
+						if formatter == nil {
+							formatter = formatters.Fallback
+						}
+						themeName := cfg.Theme
+						if themeName == "" {
+							themeName = "monokai"
+						}
+						formatter.Format(writer, styles.Get(themeName), iterator)
+					}
+				} else {
+					writer.Write(data)
+				}
+				writer.Write([]byte("\n\n"))
 			}
-			writer.Write([]byte("\n\n"))
 
 			return nil
 		})
 
 		if err != nil {
 			panic(err)
+		}
+	}
+
+	if cfg.OmittedDisclaimer && len(cfg.SkippedFiles) > 0 {
+		fmt.Fprintln(os.Stderr, "---")
+		fmt.Fprintln(os.Stderr, "Omitted files:")
+		for _, s := range cfg.SkippedFiles {
+			fmt.Fprintln(os.Stderr, s)
 		}
 	}
 }
@@ -243,6 +273,12 @@ func parseArgs() *Config {
 		case "--force", "--overwrite":
 			cfg.Force = true
 
+		case "--json":
+			cfg.JSON = true
+
+		case "--omitted-disclaimer":
+			cfg.OmittedDisclaimer = true
+
 		case "--follow-symlinks":
 			cfg.FollowSymlinks = true
 
@@ -301,6 +337,8 @@ Flags:
   --no-color             Disable color output (persisted)
   --theme <name>         Color theme (implies --color; default: monokai)
   --list-themes          List available color themes
+  --json                 Output JSONL (one JSON object per line)
+  --omitted-disclaimer   List skipped files on stderr at end of scan
   --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
   --include-venv         Don't skip venv/pycache/node_modules
   --follow-symlinks      Include symlinks (skipped by default)
@@ -318,7 +356,9 @@ Examples:
   everything src/                    (scan src/ instead of .)
   everything src/ lib/ --output ctx.txt  (scan multiple dirs)
   everything --output context.txt --include-binaries
-  everything --exclude "node_modules" --max-size 1MB`)
+  everything --exclude "node_modules" --max-size 1MB
+  everything --json --output out.jsonl
+  everything --omitted-disclaimer --output ctx.txt`)
 }
 
 func parseSize(s string) int64 {
@@ -417,13 +457,6 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	base := d.Name()
 	abs, _ := filepath.Abs(path)
-
-	if !cfg.FollowSymlinks {
-		fi, err := os.Lstat(path)
-		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
-			return true
-		}
-	}
 
 	if cfg.stdoutInode != 0 {
 		if fi, err := os.Stat(path); err == nil {

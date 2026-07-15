@@ -73,6 +73,8 @@ everything --color | less -R
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
+| `--json`                   | Output JSONL (one JSON object per line)                      | `everything --json`                    |
+| `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
 | `--stdout-safe`            | Require `--output` in interactive shells                     | `--stdout-safe`                        |
 
