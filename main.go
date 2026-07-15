@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -31,6 +32,7 @@ type Config struct {
 	Color           bool
 	Theme           string
 	FollowSymlinks  bool
+	stdoutInode     uint64
 }
 
 func isInteractive() bool {
@@ -358,12 +360,32 @@ func parseSize(s string) int64 {
 // OUTPUT SAFETY
 //
 
+func validateOutputPath(path string) error {
+	if path == "/dev/stdin" || path == "/dev/stdout" || path == "/dev/stderr" {
+		return fmt.Errorf("refusing to write to %s", path)
+	}
+	if abs, _ := filepath.Abs(path); filepath.Dir(abs) == "/dev" {
+		return fmt.Errorf("refusing to write to device file: %s", abs)
+	}
+	return nil
+}
+
 func setupOutput(cfg *Config) (io.Writer, func()) {
 	if cfg.OutputPath == "" {
+		if fi, err := os.Stdout.Stat(); err == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+				cfg.stdoutInode = st.Ino
+			}
+		}
 		return os.Stdout, func() {}
 	}
 
 	absOut, _ := filepath.Abs(cfg.OutputPath)
+
+	if err := validateOutputPath(cfg.OutputPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	cfg.Exclude[absOut] = true
 	cfg.Exclude[filepath.Base(cfg.OutputPath)] = true
@@ -400,6 +422,16 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		fi, err := os.Lstat(path)
 		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
 			return true
+		}
+	}
+
+	if cfg.stdoutInode != 0 {
+		if fi, err := os.Stat(path); err == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+				if st.Ino == cfg.stdoutInode {
+					return true
+				}
+			}
 		}
 	}
 
