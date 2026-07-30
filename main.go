@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +17,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.1.2"
+var version = "v1.2.0"
 
 type Config struct {
 	OutputPath string
@@ -126,6 +127,11 @@ func main() {
 
 			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
 				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  too large: %s (%d bytes)", path, info.Size()))
+				return nil
+			}
+
+			if looksLikePrivateKey(path) {
+				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  secret: %s", path))
 				return nil
 			}
 
@@ -345,7 +351,7 @@ Flags:
   --version, -v          Show version
   --help, -h             Show this help
 
-Always skipped: .git, .DS_Store, ._*, symlinks (unless --follow-symlinks), binaries (unless --include-binaries)
+Always skipped: .git, .DS_Store, ._*, symlinks (unless --follow-symlinks), binaries (unless --include-binaries), target/, secret files (.env, *.pem, *.key, id_rsa*, credentials, PEM private keys)
 
 Examples:
   everything --output snapshot.txt   (recommended)
@@ -484,7 +490,66 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
+	if isSecretFilename(base) {
+		return true
+	}
+
 	return false
+}
+
+//
+// SECRETS GUARD
+//
+
+var secretExtensions = map[string]bool{
+	".pem": true, ".key": true, ".p12": true, ".pfx": true, ".jks": true,
+}
+
+func isSecretFilename(name string) bool {
+	lower := strings.ToLower(name)
+
+	if strings.HasPrefix(lower, ".env") {
+		return true
+	}
+	if strings.HasPrefix(lower, "id_rsa") || strings.HasPrefix(lower, "id_ed25519") ||
+		strings.HasPrefix(lower, "id_dsa") || strings.HasPrefix(lower, "id_ecdsa") {
+		return true
+	}
+	if lower == ".htpasswd" || lower == ".netrc" || lower == "credentials.json" ||
+		lower == "credentials.yml" || lower == "credentials.yaml" {
+		return true
+	}
+
+	ext := filepath.Ext(lower)
+	if secretExtensions[ext] {
+		return true
+	}
+
+	return false
+}
+
+var pemPrivateKeyPrefix = []byte("-----BEGIN ")
+
+func looksLikePrivateKey(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	buf := make([]byte, 128)
+	n, err := f.Read(buf)
+	if err != nil || n < 10 {
+		return false
+	}
+	buf = buf[:n]
+
+	if !bytes.HasPrefix(buf, pemPrivateKeyPrefix) {
+		return false
+	}
+
+	upper := bytes.ToUpper(buf)
+	return bytes.Contains(upper, []byte("PRIVATE KEY"))
 }
 
 //
