@@ -16,7 +16,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v0.21.0"
+var version = "v1.1.0"
 
 type Config struct {
 	OutputPath string
@@ -25,17 +25,17 @@ type Config struct {
 
 	MaxSize int64
 
-	IgnoreVenv      bool
-	Force           bool
-	IncludeBinaries bool
-	StdoutSafe      bool
-	Color           bool
-	Theme           string
-	FollowSymlinks  bool
-	JSON            bool
+	IgnoreVenv        bool
+	Force             bool
+	IncludeBinaries   bool
+	StdoutSafe        bool
+	Color             bool
+	Theme             string
+	FollowSymlinks    bool
+	JSON              bool
 	OmittedDisclaimer bool
-	SkippedFiles    []string
-	stdoutInode     uint64
+	SkippedFiles      []string
+	stdoutInode       uint64
 }
 
 func isInteractive() bool {
