@@ -47,7 +47,7 @@ func isInteractive() bool {
 }
 
 func tryPrintTree(writer io.Writer) {
-	cmd := exec.Command("tree", "-n")
+	cmd := exec.Command("tree", "-n", "-I", "target")
 
 	cmd.Stdout = writer
 	cmd.Stderr = os.Stderr
