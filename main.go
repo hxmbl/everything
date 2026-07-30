@@ -469,6 +469,10 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
+	if base == "target" {
+		return true
+	}
+
 	if cfg.IgnoreVenv {
 		switch base {
 		case ".venv", "venv", "__pycache__", "node_modules":
