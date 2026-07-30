@@ -4,5 +4,10 @@ dist/
 .DS_Store
 audit.txt
 everything
+example.txt
 tap-key
 tap-key.pub
+*.pem
+*.key
+id_rsa*
+id_ed25519*
