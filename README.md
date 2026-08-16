@@ -1,27 +1,17 @@
 # everything
 (vibecoded)
 
-Dump your entire project into a single file, mostly because you're about to feed it to an LLM, ran out of cursor credit, and can't be bothered to copy-paste 47 files.
+Dump your entire project into a single file, mostly because you're about to feed it to an LLM, ran out of cursor credits, and can't be bothered to copy 47 files.
 
 Recursively walks your directory and prints every file's path + contents. That's it. That's the tool.
 
+```bash
+everything > audit.txt
 ```
-everything > context-for-llm.txt
-```
 
-Works with any model. Works with any codebase. Zero dependencies (well, Go, but you already have that).
-
-
+Works with text ✨. Works with any codebase.
 
 ## Installation
-
-Requires Go 1.20+.
-
-### go install (easiest)
-
-```bash
-go install github.com/hxmbl/everything@latest
-```
 
 ### Homebrew
 
@@ -29,11 +19,20 @@ go install github.com/hxmbl/everything@latest
 brew install hxmbl/everything/everything
 ```
 
+
+### go install (easiest)
+
+```bash
+go install github.com/hxmbl/everything@latest
+```
+(requires Go 1.26.2+)
+
+
 ### Download a release binary
 
 Grab the right tarball from the [releases page](https://github.com/Hxmbl/everything/releases), extract it, and drop it in your PATH.
 
-### Build from source
+### Or Build from source
 
 ```bash
 git clone https://github.com/Hxmbl/everything
@@ -41,13 +40,11 @@ cd everything
 go build -o everything && ./everything
 ```
 
-
-
-## Quick start
+## Quick intro
 
 ```bash
 # Dump everything to a file (recommended)
-everything --output snapshot.txt
+everything --output audit.txt
 
 # Or pipe to less for safe viewing
 everything | less
@@ -62,9 +59,9 @@ everything --color | less -R
 
 | Flag                       | What it does                                                 | Example                                |
 | -------------------------- | ------------------------------------------------------------ | -------------------------------------- |
-| `--output <path>`          | Write to file (auto-excludes itself from scan)               | `everything --output out.txt`          |
-| `--exclude <list>`         | Comma-separated names/paths to skip                          | `--exclude "*.exe,secrets.txt"`        |
-| `--max-size <n>`           | Skip files larger than this                                  | `--max-size 1MB` or `--max-size 500KB` |
+| `--output <path>`          | Write to file (auto-excludes itself from scan, refuses to clobber) | `everything --output out.txt`    |
+| `--exclude <list>` or `--ignore <list>` | Comma-separated names/paths to skip (exact match, no globs)  | `--exclude "vendor,secrets.txt"`       | 
+| `--max-size <n>`           | Skip files larger than this (`B`, `KB`, `MB`, `GB`, `TB`)    | `--max-size 1MB` or `--max-size 500KB` |
 | `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
 | `--force` or `--overwrite` | Overwrite existing output file                               | `--force`/`--overwrite`                |
 | `--color` or `--highlight` | Enable syntax highlighted output (persisted)                 | `everything --color`                   |
@@ -73,12 +70,14 @@ everything --color | less -R
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
-| `--json`                   | Output JSONL (one JSON object per line)                      | `everything --json`                    |
+| `--json`                   | Output JSONL (one `{"path","content"}` object per line)      | `everything --json`                    |
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
-| `--stdout-safe`            | Require `--output` in interactive shells                     | `--stdout-safe`                        |
+| `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
+| `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
+| `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
 
-Positional args work too — the first non-flag argument is treated as the output path.
+Positional args work too — directories you pass become the scan roots (default is `.`), and any other bare argument becomes the output path. So `everything src/ context.txt` scans `src/` into `context.txt`. (If the arg isn't a directory it's always treated as the output path, so typos just become files.)
 
 ---
 
@@ -88,25 +87,32 @@ Positional args work too — the first non-flag argument is treated as the outpu
 # Feed your Go project to an LLM
 everything --output context.txt
 
-# Exclude noise
-everything --exclude "vendor,*.pb.go" --output prompt.txt
+# Exclude noise (exact name/path matches — no globs)
+everything --exclude "vendor,pkg/generated" --output prompt.txt
 
 # Pipe directly into grep
 everything | grep "TODO\|FIXME\|HACK"
 
+# Pretty-print the dump for skimming
+everything --color | less -R
+
 # Skip large generated files
 everything --max-size 100KB --output clean.txt
+
+# JSONL for scripts (one {"path","content"} per line)
+everything --json --output feed.jsonl
 
 # Share project structure + contents
 everything --output audit.txt
 # (tree output is included automatically if you have `tree` installed)
+
+# See what got skipped (and why)
+everything --output audit.txt --omitted-disclaimer
 ```
 
 ^ Have I ever actually done any of these? No. Do I plan to? No. But the options are there if you want them.
 
 ---
-
-## 
 
 ## Why this exists
 
@@ -126,10 +132,11 @@ Real use cases people actually use this for:
 
 The output file itself (so it doesn't eat itself — no infinite loops).
 The running binary (so it doesn't dump itself).
-`.git/`, `.DS_Store`, `._*` files (always).
+`.git/`, `target/`, `.DS_Store`, `._*` files (always).
 Symlinks (unless you pass `--follow-symlinks`).
 Binary files (unless you pass `--include-binaries`).
 Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
+Secret stuff (`.env*`, keys and certs like `*.pem`/`*.key`/`id_rsa*`, `credentials*`, `.netrc`, `.htpasswd`, PEM private keys).
 
 ---
 

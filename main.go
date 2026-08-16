@@ -287,10 +287,10 @@ func parseArgs() *Config {
 		case "--follow-symlinks":
 			cfg.FollowSymlinks = true
 
-		case "--exclude":
+		case "--exclude", "--ignore":
 			i++
 			if i >= len(args) {
-				fmt.Fprintln(os.Stderr, "error: --exclude requires a comma-separated list argument")
+				fmt.Fprintln(os.Stderr, "error: --exclude/--ignore requires a comma-separated list argument")
 				os.Exit(1)
 			}
 			for _, name := range strings.Split(args[i], ",") {
@@ -325,45 +325,66 @@ func parseArgs() *Config {
 func printHelp() {
 	fmt.Println(`everything – dump your project into a flat file
 
+Dumps the paths + contents of every file in a project into a single stream,
+so you can paste it into an LLM, grep it, or keep it as a snapshot. Junk,
+binaries, and secrets are skipped automatically.
+
 Usage:
   everything [flags] [input-dirs...] [output-path]
 
 Positional arguments:
-  Existing directories are scanned as input.
-  A non-directory argument is used as the output path.
+  Directories are scanned as input (default: scan ".").
+  Any other non-flag argument is used as the output file path. Tip: a typo
+  in a directory name just becomes a file you didn't mean to write.
 
-Flags:
-  --output <path>        Write to file (auto-excluded from scan)
-  --exclude <list>       Comma-separated names/paths to skip
-  --max-size <size>      Skip files larger than this (e.g. 1MB, 500KB)
-  --include-binaries     Include binary files (skipped by default)
-  --force                Overwrite existing output file
-  --color, --highlight   Enable syntax highlighting with color (persisted)
-  --no-color             Disable color output (persisted)
-  --theme <name>         Color theme (implies --color; default: monokai)
-  --list-themes          List available color themes
-  --json                 Output JSONL (one JSON object per line)
-  --omitted-disclaimer   List skipped files on stderr at end of scan
-  --ignore-venv          (default) Skip .venv, venv, __pycache__, node_modules
-  --include-venv         Don't skip venv/pycache/node_modules
-  --follow-symlinks      Include symlinks (skipped by default)
-  --stdout-safe          Require --output in interactive shells
-  --version, -v          Show version
-  --help, -h             Show this help
+Output:
+  --output <path>       Write to a file instead of stdout. The output file
+                        is excluded from the scan, and an existing file is
+                        never overwritten unless you pass --force.
+  --force, --overwrite  Allow overwriting an existing output file.
+  --stdout-safe         Refuse to dump to an interactive terminal unless
+                        --output is given.
+  --json                Emit JSON Lines (one {"path","content"} object per
+                        line). No tree banner, no color.
 
-Always skipped: .git, .DS_Store, ._*, symlinks (unless --follow-symlinks), binaries (unless --include-binaries), target/, secret files (.env, *.pem, *.key, id_rsa*, credentials, PEM private keys)
+Filtering:
+  --exclude, --ignore <list>      Comma-separated names or paths to skip. Matching is
+                        exact (file/dir name or path) - no globs.
+  --max-size <size>     Skip files larger than this (B, KB, MB, GB, TB;
+                        e.g. 1MB, 500KB). Omit or 0 for no limit.
+  --include-binaries    Include binary files (skipped by default).
+  --include-binary*     Alias for --include-binaries.
+  --follow-symlinks     Follow symlinks instead of skipping them.
+  --include-venv        Stop auto-skipping .venv, venv, __pycache__,
+                        node_modules (they're skipped by default).
+  --omitted-disclaimer  Print the list of skipped files to stderr after the
+                        scan finishes.
+
+Appearance:
+  --color, --highlight  Syntax-highlight the output (preference is saved).
+  --no-color            Turn coloring off again (preference is saved).
+  --theme <name>        Highlight theme; implies --color. Default: monokai.
+  --list-themes         Print every theme name accepted by --theme.
+
+Other:
+  --version, -v         Print the version and exit.
+  --help, -h            Print this help and exit.
+
+Always skipped: .git, target/, .DS_Store, ._*, symlinks (unless
+--follow-symlinks), binaries (unless --include-binaries), secret files
+(.env*, id_rsa*/id_ed25519*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
+credentials, .netrc, .htpasswd, PEM private keys)
 
 Examples:
-  everything --output snapshot.txt   (recommended)
-  everything | less                  (safe viewing)
-  everything --color --output out.txt
-  everything --theme dracula --output out.txt
-  everything src/                    (scan src/ instead of .)
-  everything src/ lib/ --output ctx.txt  (scan multiple dirs)
-  everything --output context.txt --include-binaries
-  everything --exclude "node_modules" --max-size 1MB
-  everything --json --output out.jsonl
-  everything --omitted-disclaimer --output ctx.txt`)
+  everything --output snapshot.txt                recommended starting point
+  everything --color --output out.txt             syntax highlighted file
+  everything src/ lib/ --output ctx.txt           scan specific directories
+  everything --exclude "vendor,tmp" --force --output clean.txt
+  everything --max-size 1MB --output trimmed.txt   skip big files
+  everything --json --output out.jsonl            for scripts
+  everything --color | less -R                    paged, highlighted viewing
+  everything | grep "TODO"                        search the whole project
+  everything --omitted-disclaimer --output ctx.txt  see what got left out`)
 }
 
 func parseSize(s string) int64 {
