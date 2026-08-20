@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -17,7 +19,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.2.3"
+var version = "v1.3.0"
 
 type Config struct {
 	OutputPath string
@@ -37,6 +39,7 @@ type Config struct {
 	OmittedDisclaimer bool
 	SkippedFiles      []string
 	stdoutInode       uint64
+	Benchmark         bool
 }
 
 func isInteractive() bool {
@@ -62,6 +65,11 @@ func tryPrintTree(writer io.Writer) {
 
 func main() {
 	cfg := parseArgs()
+
+	if cfg.Benchmark {
+		runBenchmark(cfg)
+		os.Exit(0)
+	}
 
 	if cfg.Color && cfg.Theme == "" {
 		if t := loadSavedTheme(); t != "" {
@@ -196,6 +204,134 @@ func main() {
 }
 
 //
+// BENCHMARK
+//
+
+func runBenchmark(cfg *Config) {
+	walkDirs := cfg.InputDirs
+	if len(walkDirs) == 0 {
+		walkDirs = []string{"."}
+	}
+
+	var files, dirs, totalBytes int64
+
+	runtime.GC()
+	var memBefore runtime.MemStats
+	runtime.ReadMemStats(&memBefore)
+
+	start := time.Now()
+
+	for _, root := range walkDirs {
+		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+
+			if shouldSkip(path, d, cfg) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			if d.IsDir() {
+				dirs++
+				return nil
+			}
+
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+
+			files++
+			totalBytes += info.Size()
+
+			return nil
+		})
+	}
+
+	elapsed := time.Since(start)
+
+	var memAfter runtime.MemStats
+	runtime.ReadMemStats(&memAfter)
+	memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
+
+	pathLabel := strings.Join(walkDirs, ", ")
+	if pathLabel == "." {
+		pathLabel = "./"
+	}
+
+	fmt.Println("Everything Benchmark")
+	fmt.Println()
+	printStat("Path:", pathLabel)
+	printStat("Files:", formatNum(files))
+	printStat("Directories:", formatNum(dirs))
+	printStat("Bytes:", formatBytes(totalBytes))
+	fmt.Println()
+
+	printStat("Traversal:", formatDuration(elapsed))
+	rateLine := fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/elapsed.Seconds())))
+	printStat("Rate:", rateLine)
+	fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/elapsed.Seconds())))
+	fmt.Println()
+
+	printStat("Memory:", formatBytes(memUsed))
+	fmt.Println()
+	fmt.Printf("version:     %s\n", version)
+}
+
+func printStat(label, value string) {
+	fmt.Printf("%-13s%s\n", label, value)
+}
+
+func formatNum(n int64) string {
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	s := strconv.FormatInt(n, 10)
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	val := float64(b) / float64(unit)
+	for _, u := range []string{"KB", "MB", "GB", "TB", "PB"} {
+		if val < float64(unit) {
+			return fmt.Sprintf("%.2f %s", val, u)
+		}
+		val /= float64(unit)
+	}
+	return fmt.Sprintf("%.2f PB", val)
+}
+
+func formatDuration(d time.Duration) string {
+	switch {
+	case d >= time.Second:
+		return fmt.Sprintf("%.2f s", d.Seconds())
+	case d >= time.Millisecond:
+		return fmt.Sprintf("%.1f ms", float64(d.Microseconds())/1000.0)
+	default:
+		return fmt.Sprintf("%.1f µs", float64(d.Nanoseconds())/1000.0)
+	}
+}
+
+//
+
 // CONFIG
 //
 
@@ -309,6 +445,9 @@ func parseArgs() *Config {
 			fmt.Println("everything", version)
 			os.Exit(0)
 
+		case "--benchmark", "--bench":
+			cfg.Benchmark = true
+
 		case "--help", "-h":
 			printHelp()
 			os.Exit(0)
@@ -367,6 +506,10 @@ Appearance:
   --list-themes         Print every theme name accepted by --theme.
 
 Other:
+  --benchmark, --bench  Time a traversal instead of writing a snapshot.
+                         Reports file/dir counts, total bytes, traversal
+                         rate, and memory used. A quick "view" of a project's
+                         size and how fast everything can scan it.
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 
