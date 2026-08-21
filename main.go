@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +20,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.3.0"
+var version = "v1.3.2"
 
 type Config struct {
 	OutputPath string
@@ -40,6 +41,7 @@ type Config struct {
 	SkippedFiles      []string
 	stdoutInode       uint64
 	Benchmark         bool
+	Runs              int
 }
 
 func isInteractive() bool {
@@ -213,14 +215,95 @@ func runBenchmark(cfg *Config) {
 		walkDirs = []string{"."}
 	}
 
+	runs := cfg.Runs
+	if runs < 1 {
+		runs = 1
+	}
+
+	type runResult struct {
+		files, dirs, totalBytes int64
+		elapsed                 time.Duration
+		memUsed                 int64
+	}
+
+	results := make([]runResult, 0, runs)
+
+	for r := 0; r < runs; r++ {
+		runtime.GC()
+		var memBefore runtime.MemStats
+		runtime.ReadMemStats(&memBefore)
+
+		start := time.Now()
+		files, dirs, totalBytes := benchTraverse(cfg, walkDirs)
+		elapsed := time.Since(start)
+
+		var memAfter runtime.MemStats
+		runtime.ReadMemStats(&memAfter)
+		memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
+
+		results = append(results, runResult{files, dirs, totalBytes, elapsed, memUsed})
+	}
+
 	var files, dirs, totalBytes int64
+	var durs []time.Duration
+	var sumDur time.Duration
+	var sumMem int64
+	for _, res := range results {
+		files = res.files
+		dirs = res.dirs
+		totalBytes = res.totalBytes
+		durs = append(durs, res.elapsed)
+		sumDur += res.elapsed
+		sumMem += res.memUsed
+	}
 
-	runtime.GC()
-	var memBefore runtime.MemStats
-	runtime.ReadMemStats(&memBefore)
+	minDur := durs[0]
+	maxDur := durs[0]
+	for _, d := range durs {
+		if d < minDur {
+			minDur = d
+		}
+		if d > maxDur {
+			maxDur = d
+		}
+	}
+	medianDur := medianDuration(durs)
+	meanDur := sumDur / time.Duration(len(durs))
+	meanMem := sumMem / int64(len(durs))
 
-	start := time.Now()
+	pathLabel := strings.Join(walkDirs, ", ")
+	if pathLabel == "." {
+		pathLabel = "./"
+	}
 
+	fmt.Println("Everything Benchmark")
+	fmt.Println()
+	printStat("Path:", pathLabel)
+	printStat("Runs:", formatNum(int64(runs)))
+	fmt.Println()
+
+	printStat("Files:", formatNum(files))
+	printStat("Directories:", formatNum(dirs))
+	printStat("Bytes:", formatBytes(totalBytes))
+	fmt.Println()
+
+	fmt.Printf("%-13s%d runs\n", "Traversal:", runs)
+	printStat("  min:", formatDuration(minDur))
+	printStat("  median:", formatDuration(medianDur))
+	printStat("  mean:", formatDuration(meanDur))
+	printStat("  max:", formatDuration(maxDur))
+	fmt.Println()
+
+	printStat("Rate (mean):", fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/meanDur.Seconds()))))
+	fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/meanDur.Seconds())))
+	fmt.Println()
+
+	printStat("Memory (mean):", formatBytes(meanMem))
+	fmt.Println()
+	fmt.Printf("version:     %s\n", version)
+}
+
+func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -250,35 +333,21 @@ func runBenchmark(cfg *Config) {
 			return nil
 		})
 	}
+	return
+}
 
-	elapsed := time.Since(start)
-
-	var memAfter runtime.MemStats
-	runtime.ReadMemStats(&memAfter)
-	memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
-
-	pathLabel := strings.Join(walkDirs, ", ")
-	if pathLabel == "." {
-		pathLabel = "./"
+func medianDuration(durs []time.Duration) time.Duration {
+	n := len(durs)
+	if n == 0 {
+		return 0
 	}
-
-	fmt.Println("Everything Benchmark")
-	fmt.Println()
-	printStat("Path:", pathLabel)
-	printStat("Files:", formatNum(files))
-	printStat("Directories:", formatNum(dirs))
-	printStat("Bytes:", formatBytes(totalBytes))
-	fmt.Println()
-
-	printStat("Traversal:", formatDuration(elapsed))
-	rateLine := fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/elapsed.Seconds())))
-	printStat("Rate:", rateLine)
-	fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/elapsed.Seconds())))
-	fmt.Println()
-
-	printStat("Memory:", formatBytes(memUsed))
-	fmt.Println()
-	fmt.Printf("version:     %s\n", version)
+	sorted := make([]time.Duration, n)
+	copy(sorted, durs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
 func printStat(label, value string) {
@@ -448,6 +517,19 @@ func parseArgs() *Config {
 		case "--benchmark", "--bench":
 			cfg.Benchmark = true
 
+		case "--runs":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --runs requires an integer argument")
+				os.Exit(1)
+			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 1 {
+				fmt.Fprintln(os.Stderr, "error: --runs requires a positive integer")
+				os.Exit(1)
+			}
+			cfg.Runs = n
+
 		case "--help", "-h":
 			printHelp()
 			os.Exit(0)
@@ -507,9 +589,12 @@ Appearance:
 
 Other:
   --benchmark, --bench  Time a traversal instead of writing a snapshot.
-                         Reports file/dir counts, total bytes, traversal
-                         rate, and memory used. A quick "view" of a project's
-                         size and how fast everything can scan it.
+                          Reports file/dir counts, total bytes, traversal
+                          rate, and memory used. A quick "view" of a project's
+                          size and how fast everything can scan it.
+  --runs <n>            With --benchmark, repeat the traversal n times and
+                          report min/median/mean/max traversal times, plus
+                          mean memory usage. Default: 1.
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 
