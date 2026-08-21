@@ -9,7 +9,7 @@ Recursively walks your directory and prints every file's path + contents. That's
 everything > audit.txt
 ```
 
-Works with text ✨. Works with any codebase.
+Works with text (omg wow no way ✨). Works with any codebase.
 
 ## Installation
 
