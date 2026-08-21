@@ -141,7 +141,7 @@ The running binary (so it doesn't dump itself).
 Symlinks (unless you pass `--follow-symlinks`).
 Binary files (unless you pass `--include-binaries`).
 Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
-Secret stuff (`.env*`, keys and certs like `*.pem`/`*.key`/`id_rsa*`, `credentials*`, `.netrc`, `.htpasswd`, PEM private keys).
+Secret stuff (`.env*`, key/cert files like `id_rsa*`/`id_ed25519*`/`id_ecdsa*`/`*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.jks`, `credentials*`, `.netrc`, `.htpasswd`, PEM private keys).
 
 ---
 
