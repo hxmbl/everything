@@ -74,6 +74,8 @@ everything --color | less -R
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
+| `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot (counts, total bytes, rate, memory) | `everything --benchmark`    |
+| `--runs <n>`               | With `--benchmark`, repeat traversal n times and report min/median/mean/max times + mean memory | `everything --benchmark --runs 5` |
 | `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
 | `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
 
@@ -108,6 +110,9 @@ everything --output audit.txt
 
 # See what got skipped (and why)
 everything --output audit.txt --omitted-disclaimer
+
+# Profile traversal speed/size (repeat 5x for stable stats)
+everything --benchmark --runs 5
 ```
 
 ^ Have I ever actually done any of these? No. Do I plan to? No. But the options are there if you want them.
@@ -146,6 +151,22 @@ Secret stuff (`.env*`, keys and certs like `*.pem`/`*.key`/`id_rsa*`, `credentia
 - The `tree` command output is included automatically if you have it installed. If not, it ghosts u.
 - Use `--color` to enable syntax highlighting. Pipe to `less -R` for paged colored output.
 - Note 3: yes
+
+---
+
+## Benchmark mode
+
+Don't want a dump? Just want to know how big your project is and how fast `everything` can walk it? Pass `--benchmark` and it skips the writing entirely — it just times the traversal and reports file/dir counts, total bytes, the traversal rate, and how much memory it used.
+
+```bash
+everything --benchmark
+```
+
+Throw in `--runs <n>` to repeat the traversal n times and get a more stable read: it reports the min, median, mean, and max traversal times, plus mean memory usage. Handy for catching regressions or just flexing on slower tools.
+
+```bash
+everything --benchmark --runs 5
+```
 
 ---
 
