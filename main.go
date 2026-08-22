@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/chroma/v2"
@@ -20,7 +22,24 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.3.8"
+var version = "v1.4.0"
+
+var (
+	peekPool = sync.Pool{New: func() any {
+		b := make([]byte, peekSize)
+		return &b
+	}}
+	lineBufPool = sync.Pool{New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	}}
+	keyBufPool = sync.Pool{New: func() any {
+		b := make([]byte, 128)
+		return &b
+	}}
+
+	lexerCache sync.Map
+)
 
 type Config struct {
 	OutputPath string
@@ -42,6 +61,8 @@ type Config struct {
 	stdoutInode       uint64
 	Benchmark         bool
 	Runs              int
+
+	excludeAbsPaths map[string]bool
 }
 
 func isInteractive() bool {
@@ -118,8 +139,7 @@ func main() {
 				return nil
 			}
 
-			fi, err := os.Lstat(path)
-			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if d.Type()&os.ModeSymlink != 0 {
 				if !cfg.FollowSymlinks {
 					cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  symlink: %s", path))
 					return nil
@@ -140,17 +160,17 @@ func main() {
 				return nil
 			}
 
-			if looksLikePrivateKey(path) {
-				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  secret: %s", path))
-				return nil
-			}
-
 			data, err := readFileFiltered(path, cfg.IncludeBinaries)
 			if err != nil {
 				return nil
 			}
 			if data == nil {
 				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  binary: %s", path))
+				return nil
+			}
+
+			if looksLikePrivateKeyData(data) {
+				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  secret: %s", path))
 				return nil
 			}
 
@@ -165,11 +185,7 @@ func main() {
 			} else {
 				fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
 				if cfg.Color {
-					lexer := lexers.Match(path)
-					if lexer == nil {
-						lexer = lexers.Fallback
-					}
-					lexer = chroma.Coalesce(lexer)
+					lexer := matchLexer(path)
 					iterator, err := lexer.Tokenise(nil, string(data))
 					if err == nil {
 						formatter := formatters.Get("terminal")
@@ -346,12 +362,15 @@ func countLines(path string) int64 {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 64*1024)
+	bufp := lineBufPool.Get().(*[]byte)
+	buf := *bufp
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		lineBufPool.Put(bufp)
 		return 0
 	}
 	if isBinary(buf[:n]) {
+		lineBufPool.Put(bufp)
 		return 0
 	}
 
@@ -377,6 +396,7 @@ func countLines(path string) int64 {
 			break
 		}
 	}
+	lineBufPool.Put(bufp)
 
 	if last != '\n' {
 		total++
@@ -454,13 +474,17 @@ func formatDuration(d time.Duration) string {
 
 func parseArgs() *Config {
 	cfg := &Config{
-		Exclude:    make(map[string]bool),
-		IgnoreVenv: true,
+		Exclude:         make(map[string]bool),
+		excludeAbsPaths: make(map[string]bool),
+		IgnoreVenv:      true,
 	}
 
 	if exe, err := os.Executable(); err == nil {
 		cfg.Exclude[exe] = true
 		cfg.Exclude[filepath.Base(exe)] = true
+		if abs, err := filepath.Abs(exe); err == nil {
+			cfg.excludeAbsPaths[abs] = true
+		}
 	}
 
 	colorExplicit := false
@@ -730,6 +754,7 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 
 	cfg.Exclude[absOut] = true
 	cfg.Exclude[filepath.Base(cfg.OutputPath)] = true
+	cfg.excludeAbsPaths[absOut] = true
 
 	absProj, _ := filepath.Abs(".")
 	if strings.HasPrefix(absOut, filepath.Clean(absProj)+string(filepath.Separator)) {
@@ -748,7 +773,8 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 		panic(err)
 	}
 
-	return f, func() { f.Close() }
+	bw := bufio.NewWriterSize(f, 256*1024)
+	return bw, func() { bw.Flush(); f.Close() }
 }
 
 //
@@ -757,7 +783,6 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 
 func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	base := d.Name()
-	abs, _ := filepath.Abs(path)
 
 	if cfg.stdoutInode != 0 {
 		if fi, err := os.Stat(path); err == nil && getInode(fi) == cfg.stdoutInode {
@@ -769,7 +794,7 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
-	if base == ".git" || strings.HasPrefix(path, ".git"+string(filepath.Separator)) || strings.HasPrefix(abs, ".git"+string(filepath.Separator)) {
+	if base == ".git" || strings.Contains(path, string(filepath.Separator)+".git"+string(filepath.Separator)) || strings.HasPrefix(path, ".git"+string(filepath.Separator)) {
 		return true
 	}
 
@@ -784,8 +809,14 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		}
 	}
 
-	if cfg.Exclude[base] || cfg.Exclude[path] || cfg.Exclude[abs] {
+	if cfg.Exclude[base] || cfg.Exclude[path] {
 		return true
+	}
+
+	if len(cfg.excludeAbsPaths) > 0 {
+		if abs, err := filepath.Abs(path); err == nil && cfg.excludeAbsPaths[abs] {
+			return true
+		}
 	}
 
 	if isSecretFilename(base) {
@@ -801,6 +832,21 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 
 var secretExtensions = map[string]bool{
 	".pem": true, ".key": true, ".p12": true, ".pfx": true, ".jks": true,
+}
+
+var binaryMagics = [][]byte{
+	{0x7f, 'E', 'L', 'F'},
+	{'M', 'Z'},
+	{'%', 'P', 'D', 'F'},
+	{0x89, 'P', 'N', 'G'},
+	{'P', 'K', 0x03, 0x04},
+	{0x1f, 0x8b},
+	{0x42, 0x5a},
+	{0xfd, 0x37, 0x7a, 0x58, 0x5a},
+	{0xfe, 0xed, 0xfa, 0xce},
+	{0xfe, 0xed, 0xfa, 0xcf},
+	{0xce, 0xfa, 0xed, 0xfe},
+	{0xcf, 0xfa, 0xed, 0xfe},
 }
 
 func isSecretFilename(name string) bool {
@@ -835,17 +881,34 @@ func looksLikePrivateKey(path string) bool {
 	}
 	defer f.Close()
 
-	buf := make([]byte, 128)
+	bufp := keyBufPool.Get().(*[]byte)
+	buf := *bufp
 	n, err := f.Read(buf)
 	if err != nil || n < 10 {
+		keyBufPool.Put(bufp)
 		return false
 	}
 	buf = buf[:n]
+	result := looksLikePrivateKeySlice(buf)
+	keyBufPool.Put(bufp)
+	return result
+}
 
+func looksLikePrivateKeyData(data []byte) bool {
+	if len(data) < 10 {
+		return false
+	}
+	n := len(data)
+	if n > 128 {
+		n = 128
+	}
+	return looksLikePrivateKeySlice(data[:n])
+}
+
+func looksLikePrivateKeySlice(buf []byte) bool {
 	if !bytes.HasPrefix(buf, pemPrivateKeyPrefix) {
 		return false
 	}
-
 	upper := bytes.ToUpper(buf)
 	return bytes.Contains(upper, []byte("PRIVATE KEY"))
 }
@@ -863,26 +926,34 @@ func readFileFiltered(path string, includeBinaries bool) ([]byte, error) {
 	}
 	defer f.Close()
 
-	peek := make([]byte, peekSize)
+	peekp := peekPool.Get().(*[]byte)
+	peek := *peekp
 	n, err := io.ReadFull(f, peek)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		peekPool.Put(peekp)
 		return nil, err
 	}
 	peek = peek[:n]
 
 	if !includeBinaries && isBinary(peek) {
+		peekPool.Put(peekp)
 		return nil, nil
 	}
 
 	if n < peekSize {
-		return peek, nil
+		result := make([]byte, n)
+		copy(result, peek)
+		peekPool.Put(peekp)
+		return result, nil
 	}
 
 	rest, err := io.ReadAll(f)
 	if err != nil {
+		peekPool.Put(peekp)
 		return nil, err
 	}
 
+	peekPool.Put(peekp)
 	return append(peek, rest...), nil
 }
 
@@ -898,29 +969,23 @@ func hasMagic(peek, magic []byte) bool {
 	return true
 }
 
-func isBinary(peek []byte) bool {
-	magics := [][]byte{
-		{0x7f, 'E', 'L', 'F'},
-		{'M', 'Z'},
-		{'%', 'P', 'D', 'F'},
-		{0x89, 'P', 'N', 'G'},
-		{'P', 'K', 0x03, 0x04},
-		{0x1f, 0x8b},
-		{0x42, 0x5a},
-		{0xfd, 0x37, 0x7a, 0x58, 0x5a},
-		{0xfe, 0xed, 0xfa, 0xce},
-		{0xfe, 0xed, 0xfa, 0xcf},
-		{0xce, 0xfa, 0xed, 0xfe},
-		{0xcf, 0xfa, 0xed, 0xfe},
+func matchLexer(path string) chroma.Lexer {
+	ext := filepath.Ext(path)
+	if v, ok := lexerCache.Load(ext); ok {
+		return v.(chroma.Lexer)
 	}
-	for _, m := range magics {
-		if hasMagic(peek, m) {
-			return true
-		}
+	lexer := lexers.Match(path)
+	if lexer == nil {
+		lexer = lexers.Fallback
 	}
+	lexer = chroma.Coalesce(lexer)
+	lexerCache.Store(ext, lexer)
+	return lexer
+}
 
-	for _, b := range peek {
-		if b == 0 {
+func isBinary(peek []byte) bool {
+	for _, m := range binaryMagics {
+		if len(peek) >= len(m) && hasMagic(peek, m) {
 			return true
 		}
 	}
@@ -928,8 +993,12 @@ func isBinary(peek []byte) bool {
 	if len(peek) == 0 {
 		return false
 	}
+
 	controlCount := 0
 	for _, b := range peek {
+		if b == 0 {
+			return true
+		}
 		if b < 0x20 && b != 0x09 && b != 0x0a && b != 0x0d {
 			controlCount++
 		}
