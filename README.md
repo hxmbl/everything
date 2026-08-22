@@ -74,7 +74,7 @@ everything --color | less -R
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
-| `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot (counts, total bytes, rate, memory) | `everything --benchmark`    |
+| `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot (counts, total bytes, lines of code, rate, memory) | `everything --benchmark`    |
 | `--runs <n>`               | With `--benchmark`, repeat traversal n times and report min/median/mean/max times + mean memory | `everything --benchmark --runs 5` |
 | `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
 | `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
@@ -156,7 +156,7 @@ Secret stuff (`.env*`, key/cert files like `id_rsa*`/`id_ed25519*`/`id_ecdsa*`/`
 
 ## Benchmark mode
 
-Don't want a dump? Just want to know how big your project is and how fast `everything` can walk it? Pass `--benchmark` and it skips the writing entirely — it just times the traversal and reports file/dir counts, total bytes, the traversal rate, and how much memory it used.
+Don't want a dump? Just want to know how big your project is and how fast `everything` can walk it? Pass `--benchmark` and it skips the writing entirely — it just times the traversal and reports file/dir counts, total bytes, lines of code (text files only — binaries are skipped), the traversal rate, and how much memory it used.
 
 ```bash
 everything --benchmark

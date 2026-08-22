@@ -20,7 +20,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.3.3"
+var version = "v1.3.8"
 
 type Config struct {
 	OutputPath string
@@ -221,9 +221,9 @@ func runBenchmark(cfg *Config) {
 	}
 
 	type runResult struct {
-		files, dirs, totalBytes int64
-		elapsed                 time.Duration
-		memUsed                 int64
+		files, dirs, totalBytes, lines int64
+		elapsed                        time.Duration
+		memUsed                        int64
 	}
 
 	results := make([]runResult, 0, runs)
@@ -234,17 +234,17 @@ func runBenchmark(cfg *Config) {
 		runtime.ReadMemStats(&memBefore)
 
 		start := time.Now()
-		files, dirs, totalBytes := benchTraverse(cfg, walkDirs)
+		files, dirs, totalBytes, lines := benchTraverse(cfg, walkDirs)
 		elapsed := time.Since(start)
 
 		var memAfter runtime.MemStats
 		runtime.ReadMemStats(&memAfter)
 		memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
 
-		results = append(results, runResult{files, dirs, totalBytes, elapsed, memUsed})
+		results = append(results, runResult{files, dirs, totalBytes, lines, elapsed, memUsed})
 	}
 
-	var files, dirs, totalBytes int64
+	var files, dirs, totalBytes, lines int64
 	var durs []time.Duration
 	var sumDur time.Duration
 	var sumMem int64
@@ -252,6 +252,7 @@ func runBenchmark(cfg *Config) {
 		files = res.files
 		dirs = res.dirs
 		totalBytes = res.totalBytes
+		lines = res.lines
 		durs = append(durs, res.elapsed)
 		sumDur += res.elapsed
 		sumMem += res.memUsed
@@ -285,6 +286,7 @@ func runBenchmark(cfg *Config) {
 	printStat("Files:", formatNum(files))
 	printStat("Directories:", formatNum(dirs))
 	printStat("Bytes:", formatBytes(totalBytes))
+	printStat("Lines of Code:", formatNum(lines))
 	fmt.Println()
 
 	fmt.Printf("%-13s%d runs\n", "Traversal:", runs)
@@ -303,7 +305,7 @@ func runBenchmark(cfg *Config) {
 	fmt.Printf("version:     %s\n", version)
 }
 
-func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes int64) {
+func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lines int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -329,11 +331,57 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes int6
 
 			files++
 			totalBytes += info.Size()
+			lines += countLines(path)
 
 			return nil
 		})
 	}
 	return
+}
+
+func countLines(path string) int64 {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	buf := make([]byte, 64*1024)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return 0
+	}
+	if isBinary(buf[:n]) {
+		return 0
+	}
+
+	var total int64
+	last := byte('\n')
+	for {
+		for _, b := range buf[:n] {
+			if b == '\n' {
+				total++
+			}
+		}
+		if n > 0 {
+			last = buf[n-1]
+		}
+		if n < len(buf) {
+			break
+		}
+		n, err = f.Read(buf)
+		if err != nil && err != io.EOF {
+			break
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	if last != '\n' {
+		total++
+	}
+	return total
 }
 
 func medianDuration(durs []time.Duration) time.Duration {
@@ -589,9 +637,10 @@ Appearance:
 
 Other:
   --benchmark, --bench  Time a traversal instead of writing a snapshot.
-                          Reports file/dir counts, total bytes, traversal
-                          rate, and memory used. A quick "view" of a project's
-                          size and how fast everything can scan it.
+                          Reports file/dir counts, total bytes, lines of
+                          code, traversal rate, and memory used. A quick
+                          "view" of a project's size and how fast everything
+                          can scan it.
   --runs <n>            With --benchmark, repeat the traversal n times and
                           report min/median/mean/max traversal times, plus
                           mean memory usage. Default: 1.
