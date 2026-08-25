@@ -16,7 +16,7 @@ Works with text (omg wow no way ✨). Works with any codebase.
 ### Homebrew
 
 ```bash
-brew install hxmbl/everything/everything
+brew install hxmbl/tap/everything
 ```
 
 
@@ -59,27 +59,27 @@ everything --color | less -R
 
 | Flag                       | What it does                                                 | Example                                |
 | -------------------------- | ------------------------------------------------------------ | -------------------------------------- |
-| `--output <path>`          | Write to file (auto-excludes itself from scan, refuses to clobber) | `everything --output out.txt`    |
+| `--output <path>`          | Write to file (auto-excludes itself from scan, refuses to clobber, refuses symlinks) | `everything --output out.txt`    |
 | `--exclude <list>` or `--ignore <list>` | Comma-separated names/paths to skip (exact match, no globs)  | `--exclude "vendor,secrets.txt"`       | 
-| `--max-size <n>`           | Skip files larger than this (`B`, `KB`, `MB`, `GB`, `TB`)    | `--max-size 1MB` or `--max-size 500KB` |
+| `--max-size <n>`           | Skip files larger than this (`B`, `KB`, `MB`, `GB`, `TB`); invalid values are errors, not "no limit" | `--max-size 1MB` or `--max-size 500KB` |
 | `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
-| `--force` or `--overwrite` | Overwrite existing output file                               | `--force`/`--overwrite`                |
-| `--color` or `--highlight` | Enable syntax highlighted output (persisted)                 | `everything --color`                   |
+| `--force` or `--overwrite` | Overwrite existing output file (explicit `--output` only — a positional arg never clobbers an existing file) | `--force`/`--overwrite`                |
+| `--color` or `--highlight` | Enable syntax highlighted output (persisted; a saved preference only auto-applies on a real terminal) | `everything --color`                   |
 | `--no-color`               | Disable color output (persisted)                             | `everything --no-color`                |
-| `--theme <name>`           | Color theme (implies `--color`; default: monokai)            | `--theme dracula`                      |
+| `--theme <name>`           | Color theme (implies `--color`; default: monokai; invalid names are rejected) | `--theme dracula`                      |
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
 | `--json`                   | Output JSONL (one `{"path","content"}` object per line)      | `everything --json`                    |
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
-| `--follow-symlinks`        | Include symlinks (skipped by default)                        | `--follow-symlinks`                    |
+| `--follow-symlinks`        | Read file symlinks (skipped by default; directory symlinks stay skipped, pipes/devices always skipped) | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
 | `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot (counts, total bytes, lines of code, rate, memory) | `everything --benchmark`    |
 | `--runs <n>`               | With `--benchmark`, repeat traversal n times and report min/median/mean/max times + mean memory | `everything --benchmark --runs 5` |
 | `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
 | `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
 
-Positional args work too — directories you pass become the scan roots (default is `.`), and any other bare argument becomes the output path. So `everything src/ context.txt` scans `src/` into `context.txt`. (If the arg isn't a directory it's always treated as the output path, so typos just become files.)
+Positional args work too — directories you pass become the scan roots (default is `.`), and any other bare argument becomes the output path — but only if it doesn't already exist. An existing file is refused instead of clobbered, so `everything src/ context.txt` scans `src/` into `context.txt`, while a typo like `everything srt/` just creates a new file. To overwrite something on purpose, say so: `--output <path> --force`.
 
 ---
 
@@ -138,10 +138,14 @@ Real use cases people actually use this for:
 The output file itself (so it doesn't eat itself — no infinite loops).
 The running binary (so it doesn't dump itself).
 `.git/`, `target/`, `.DS_Store`, `._*` files (always).
-Symlinks (unless you pass `--follow-symlinks`).
+Symlinks (unless you pass `--follow-symlinks`; directory symlinks always).
+Pipes, devices, and sockets (so a stray fifo can't hang the scan).
 Binary files (unless you pass `--include-binaries`).
 Venv/generated dirs by default (`.venv`, `venv`, `__pycache__`, `node_modules`).
-Secret stuff (`.env*`, key/cert files like `id_rsa*`/`id_ed25519*`/`id_ecdsa*`/`*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.jks`, `credentials*`, `.netrc`, `.htpasswd`, PEM private keys).
+Secret-looking files: `.env*` and `*.env`, `id_rsa*`/`id_ed25519*`/`id_dsa*`/`id_ecdsa*`, `*.pem`/`*.key`/`*.p12`/`*.pfx`/`*.jks`/`*.keystore`/`*.kdbx`, `credentials*`, `client_secret*`, `*service-account*.json`, `secrets.*`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`, `.git-credentials`.
+Anything whose first 4KB contains a PEM private key block (`-----BEGIN ... PRIVATE KEY`) — even if the name looks innocent or the header is wrapped in JSON/whitespace/BOM.
+
+Run with `--omitted-disclaimer` to see exactly what got skipped before you share the dump.
 
 ---
 

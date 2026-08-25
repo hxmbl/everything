@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -22,7 +24,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.4.0"
+var version = "v1.5.0"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -31,10 +33,6 @@ var (
 	}}
 	lineBufPool = sync.Pool{New: func() any {
 		b := make([]byte, 64*1024)
-		return &b
-	}}
-	keyBufPool = sync.Pool{New: func() any {
-		b := make([]byte, 128)
 		return &b
 	}}
 
@@ -59,10 +57,18 @@ type Config struct {
 	OmittedDisclaimer bool
 	SkippedFiles      []string
 	stdoutInode       uint64
+	outputInode       uint64
+	exeInode          uint64
 	Benchmark         bool
 	Runs              int
 
 	excludeAbsPaths map[string]bool
+}
+
+func (cfg *Config) recordSkip(msg string) {
+	if cfg.OmittedDisclaimer {
+		cfg.SkippedFiles = append(cfg.SkippedFiles, msg)
+	}
 }
 
 func isInteractive() bool {
@@ -73,17 +79,60 @@ func isInteractive() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-func tryPrintTree(writer io.Writer) {
-	cmd := exec.Command("tree", "-n", "-I", "target")
+const treeIgnorePattern = ".git|target|node_modules|.venv|venv|__pycache__|" +
+	"*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*.jceks|*.kdbx|" +
+	"credentials*|client_secret*|client-secret*|*service-account*|secrets.*|" +
+	"*.env|id_rsa*|id_ed25519*|id_ecdsa*|id_dsa*"
 
-	cmd.Stdout = writer
-	cmd.Stderr = os.Stderr
+func filterTreeLine(line string) bool {
+	if idx := strings.Index(line, " -> "); idx >= 0 {
+		target := strings.TrimSpace(line[idx+4:])
+		return isSecretFilename(filepath.Base(target))
+	}
+	name := line
+	for _, sep := range []string{"├── ", "└── ", "│   "} {
+		if idx := strings.LastIndex(name, sep); idx >= 0 {
+			name = name[idx+len(sep):]
+			break
+		}
+	}
+	if idx := strings.IndexByte(name, '/'); idx >= 0 {
+		return false
+	}
+	return isSecretFilename(name)
+}
 
-	if err := cmd.Run(); err != nil {
+func tryPrintTree(writer io.Writer, roots []string) {
+	bin, err := exec.LookPath("tree")
+	if err != nil {
 		return
 	}
 
-	fmt.Fprint(writer, "\n")
+	for _, root := range roots {
+		var filtered bytes.Buffer
+		cmd := exec.Command(bin, "-n", "-I", treeIgnorePattern, root)
+		cmd.Stdout = &filtered
+		cmd.Stderr = nil
+
+		runErr := cmd.Run()
+
+		for _, line := range strings.Split(strings.TrimSuffix(filtered.String(), "\n"), "\n") {
+			if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "0 directories") ||
+				strings.Contains(line, " directories, ") || strings.HasSuffix(line, " files") {
+				fmt.Fprintln(writer, line)
+				continue
+			}
+			if filterTreeLine(line) {
+				continue
+			}
+			fmt.Fprintln(writer, line)
+		}
+		fmt.Fprint(writer, "\n")
+
+		if runErr != nil && filtered.Len() == 0 {
+			return
+		}
+	}
 }
 
 func main() {
@@ -92,12 +141,6 @@ func main() {
 	if cfg.Benchmark {
 		runBenchmark(cfg)
 		os.Exit(0)
-	}
-
-	if cfg.Color && cfg.Theme == "" {
-		if t := loadSavedTheme(); t != "" {
-			cfg.Theme = t
-		}
 	}
 
 	if cfg.OutputPath == "" && isInteractive() && !cfg.StdoutSafe {
@@ -111,26 +154,29 @@ func main() {
 	}
 
 	writer, cleanup := setupOutput(cfg)
-	defer cleanup()
-
-	if !cfg.JSON {
-		tryPrintTree(writer)
-	}
 
 	walkDirs := cfg.InputDirs
 	if len(walkDirs) == 0 {
 		walkDirs = []string{"."}
 	}
 
+	if !cfg.JSON {
+		tryPrintTree(writer, walkDirs)
+	}
+
 	for _, root := range walkDirs {
 		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
+				cfg.recordSkip(fmt.Sprintf("  unreadable: %s: %v", path, err))
 				return nil
 			}
 
 			if shouldSkip(path, d, cfg) {
 				if d.IsDir() {
 					return filepath.SkipDir
+				}
+				if isSecretFilename(d.Name()) {
+					cfg.recordSkip(fmt.Sprintf("  secret: %s", path))
 				}
 				return nil
 			}
@@ -139,77 +185,97 @@ func main() {
 				return nil
 			}
 
+			var info os.FileInfo
 			if d.Type()&os.ModeSymlink != 0 {
 				if !cfg.FollowSymlinks {
-					cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  symlink: %s", path))
+					cfg.recordSkip(fmt.Sprintf("  symlink: %s", path))
 					return nil
 				}
-				if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-					cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  dir symlink: %s", path))
+				target, statErr := os.Stat(path)
+				if statErr != nil {
 					return nil
 				}
-			}
-
-			info, err := d.Info()
-			if err != nil {
-				return nil
+				if target.IsDir() {
+					cfg.recordSkip(fmt.Sprintf("  dir symlink: %s", path))
+					return nil
+				}
+				if !target.Mode().IsRegular() {
+					return nil
+				}
+				info = target
+			} else {
+				if !d.Type().IsRegular() {
+					return nil
+				}
+				entryInfo, infoErr := d.Info()
+				if infoErr != nil {
+					return nil
+				}
+				info = entryInfo
 			}
 
 			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
-				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  too large: %s (%d bytes)", path, info.Size()))
+				cfg.recordSkip(fmt.Sprintf("  too large: %s (%d bytes)", path, info.Size()))
 				return nil
 			}
 
-			data, err := readFileFiltered(path, cfg.IncludeBinaries)
+			f, err := os.Open(path)
 			if err != nil {
 				return nil
 			}
-			if data == nil {
-				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  binary: %s", path))
+			defer f.Close()
+
+			peekp := peekPool.Get().(*[]byte)
+			peek := *peekp
+			n, err := io.ReadFull(f, peek)
+			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+				peekPool.Put(peekp)
+				return nil
+			}
+			peek = peek[:n]
+
+			if !cfg.IncludeBinaries && isBinary(peek) {
+				peekPool.Put(peekp)
+				cfg.recordSkip(fmt.Sprintf("  binary: %s", path))
 				return nil
 			}
 
-			if looksLikePrivateKeyData(data) {
-				cfg.SkippedFiles = append(cfg.SkippedFiles, fmt.Sprintf("  secret: %s", path))
+			if hasPrivateKeyMarker(peek) {
+				peekPool.Put(peekp)
+				cfg.recordSkip(fmt.Sprintf("  secret: %s", path))
 				return nil
 			}
+
+			const highlightLimit = 1 << 20
+			useHighlight := cfg.Color && info.Size() <= highlightLimit
 
 			if cfg.JSON {
-				type jsonLine struct {
-					Path    string `json:"path"`
-					Content string `json:"content"`
-				}
-				b, _ := json.Marshal(jsonLine{Path: path, Content: string(data)})
-				writer.Write(b)
-				writer.Write([]byte("\n"))
+				writeJSONLine(writer, path, peek, f)
 			} else {
 				fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-				if cfg.Color {
-					lexer := matchLexer(path)
-					iterator, err := lexer.Tokenise(nil, string(data))
-					if err == nil {
-						formatter := formatters.Get("terminal")
-						if formatter == nil {
-							formatter = formatters.Fallback
-						}
-						themeName := cfg.Theme
-						if themeName == "" {
-							themeName = "monokai"
-						}
-						formatter.Format(writer, styles.Get(themeName), iterator)
-					}
+				if useHighlight {
+					emitHighlighted(writer, path, readWholeFile(peek, f), cfg.Theme)
 				} else {
-					writer.Write(data)
+					writer.Write(peek)
+					copyRest(writer, f)
 				}
 				writer.Write([]byte("\n\n"))
 			}
+			peekPool.Put(peekp)
 
 			return nil
 		})
 
 		if err != nil {
-			panic(err)
+			fmt.Fprintln(os.Stderr, "error: traversal failed:", err)
+			_ = cleanup()
+			os.Exit(1)
 		}
+	}
+
+	if err := cleanup(); err != nil {
+		fmt.Fprintln(os.Stderr, "error writing output:", err)
+		os.Exit(1)
 	}
 
 	if cfg.OmittedDisclaimer && len(cfg.SkippedFiles) > 0 {
@@ -256,6 +322,9 @@ func runBenchmark(cfg *Config) {
 		var memAfter runtime.MemStats
 		runtime.ReadMemStats(&memAfter)
 		memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
+		if memUsed < 0 {
+			memUsed = 0
+		}
 
 		results = append(results, runResult{files, dirs, totalBytes, lines, elapsed, memUsed})
 	}
@@ -312,10 +381,13 @@ func runBenchmark(cfg *Config) {
 	printStat("  max:", formatDuration(maxDur))
 	fmt.Println()
 
-	printStat("Rate (mean):", fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/meanDur.Seconds()))))
-	fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/meanDur.Seconds())))
+	if meanDur > 0 {
+		printStat("Rate (mean):", fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/meanDur.Seconds()))))
+		fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/meanDur.Seconds())))
+	} else {
+		printStat("Rate (mean):", "n/a")
+	}
 	fmt.Println()
-
 	printStat("Memory (mean):", formatBytes(meanMem))
 	fmt.Println()
 	fmt.Printf("version:     %s\n", version)
@@ -340,9 +412,25 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 				return nil
 			}
 
-			info, err := d.Info()
-			if err != nil {
-				return nil
+			var info os.FileInfo
+			if d.Type()&os.ModeSymlink != 0 {
+				if !cfg.FollowSymlinks {
+					return nil
+				}
+				target, statErr := os.Stat(path)
+				if statErr != nil || target.IsDir() || !target.Mode().IsRegular() {
+					return nil
+				}
+				info = target
+			} else {
+				if !d.Type().IsRegular() {
+					return nil
+				}
+				entryInfo, infoErr := d.Info()
+				if infoErr != nil {
+					return nil
+				}
+				info = entryInfo
 			}
 
 			files++
@@ -480,14 +568,30 @@ func parseArgs() *Config {
 	}
 
 	if exe, err := os.Executable(); err == nil {
-		cfg.Exclude[exe] = true
-		cfg.Exclude[filepath.Base(exe)] = true
-		if abs, err := filepath.Abs(exe); err == nil {
+		if resolved, linkErr := filepath.EvalSymlinks(exe); linkErr == nil {
+			exe = resolved
+		}
+		if abs, absErr := filepath.Abs(exe); absErr == nil {
 			cfg.excludeAbsPaths[abs] = true
+			if fi, statErr := os.Stat(abs); statErr == nil {
+				cfg.exeInode = getInode(fi)
+			}
 		}
 	}
 
 	colorExplicit := false
+
+	knownFlags := map[string]bool{
+		"--output": true, "--ignore-venv": true, "--include-venv": true,
+		"--include-binary": true, "--include-binaries": true, "--theme": true,
+		"--list-themes": true, "--color": true, "--highlight": true,
+		"--no-color": true, "--stdout-safe": true, "--force": true,
+		"--overwrite": true, "--json": true, "--omitted-disclaimer": true,
+		"--follow-symlinks": true, "--exclude": true, "--ignore": true,
+		"--max-size": true, "--version": true, "-v": true,
+		"--benchmark": true, "--bench": true, "--runs": true,
+		"--help": true, "-h": true,
+	}
 
 	args := os.Args[1:]
 
@@ -495,14 +599,26 @@ func parseArgs() *Config {
 		a := args[i]
 
 		if !strings.HasPrefix(a, "-") {
-			if info, err := os.Stat(a); err == nil && info.IsDir() {
+			info, err := os.Stat(a)
+			if err == nil && info.IsDir() {
 				cfg.InputDirs = append(cfg.InputDirs, a)
 				continue
+			}
+			if err == nil && !info.IsDir() {
+				fmt.Fprintf(os.Stderr, "error: %q exists and is not a directory; refusing to use it as output. Use --output <path> (and --force to overwrite).\n", a)
+				os.Exit(1)
 			}
 			if cfg.OutputPath == "" {
 				cfg.OutputPath = a
 				continue
 			}
+			fmt.Fprintf(os.Stderr, "error: unexpected argument %q (an output path was already given)\n", a)
+			os.Exit(1)
+		}
+
+		if a == "--" {
+			fmt.Fprintln(os.Stderr, "error: -- is not supported")
+			os.Exit(1)
 		}
 
 		switch a {
@@ -510,6 +626,10 @@ func parseArgs() *Config {
 			i++
 			if i >= len(args) {
 				fmt.Fprintln(os.Stderr, "error: --output requires a file path argument")
+				os.Exit(1)
+			}
+			if knownFlags[args[i]] && args[i] != "-" {
+				fmt.Fprintf(os.Stderr, "error: --output requires a file path, got flag %q\n", args[i])
 				os.Exit(1)
 			}
 			cfg.OutputPath = args[i]
@@ -525,8 +645,12 @@ func parseArgs() *Config {
 
 		case "--theme":
 			i++
-			if i >= len(args) {
+			if i >= len(args) || (knownFlags[args[i]] && args[i] != "-") {
 				fmt.Fprintln(os.Stderr, "error: --theme requires a theme name argument")
+				os.Exit(1)
+			}
+			if !validTheme(args[i]) {
+				fmt.Fprintf(os.Stderr, "error: unknown theme %q (see --list-themes)\n", args[i])
 				os.Exit(1)
 			}
 			cfg.Theme = args[i]
@@ -571,7 +695,10 @@ func parseArgs() *Config {
 				os.Exit(1)
 			}
 			for _, name := range strings.Split(args[i], ",") {
-				cfg.Exclude[strings.TrimSpace(name)] = true
+				name = filepath.FromSlash(strings.TrimSpace(name))
+				if name != "" {
+					cfg.Exclude[name] = true
+				}
 			}
 
 		case "--max-size":
@@ -580,7 +707,12 @@ func parseArgs() *Config {
 				fmt.Fprintln(os.Stderr, "error: --max-size requires a size argument (e.g. 1MB, 500KB)")
 				os.Exit(1)
 			}
-			cfg.MaxSize = parseSize(args[i])
+			size, sizeErr := parseSize(args[i])
+			if sizeErr != nil {
+				fmt.Fprintf(os.Stderr, "error: --max-size: %v\n", sizeErr)
+				os.Exit(1)
+			}
+			cfg.MaxSize = size
 
 		case "--version", "-v":
 			fmt.Println("everything", version)
@@ -596,8 +728,8 @@ func parseArgs() *Config {
 				os.Exit(1)
 			}
 			n, err := strconv.Atoi(args[i])
-			if err != nil || n < 1 {
-				fmt.Fprintln(os.Stderr, "error: --runs requires a positive integer")
+			if err != nil || n < 1 || n > 10000 {
+				fmt.Fprintln(os.Stderr, "error: --runs requires a positive integer (max 10000)")
 				os.Exit(1)
 			}
 			cfg.Runs = n
@@ -605,14 +737,37 @@ func parseArgs() *Config {
 		case "--help", "-h":
 			printHelp()
 			os.Exit(0)
+
+		default:
+			fmt.Fprintf(os.Stderr, "error: unknown flag %q (see --help)\n", a)
+			os.Exit(1)
 		}
 	}
 
-	if !colorExplicit && loadSavedColor() {
+	if !colorExplicit && cfg.OutputPath == "" && loadSavedColor() && isInteractive() {
 		cfg.Color = true
 	}
 
+	if cfg.Color && cfg.Theme == "" {
+		if t := loadSavedTheme(); t != "" {
+			cfg.Theme = t
+		}
+		if cfg.Theme == "" {
+			cfg.Theme = "monokai"
+		}
+	}
+
 	return cfg
+}
+
+func validTheme(name string) bool {
+	lower := strings.ToLower(name)
+	for _, n := range styles.Names() {
+		if strings.ToLower(n) == lower {
+			return true
+		}
+	}
+	return false
 }
 
 func printHelp() {
@@ -627,13 +782,15 @@ Usage:
 
 Positional arguments:
   Directories are scanned as input (default: scan ".").
-  Any other non-flag argument is used as the output file path. Tip: a typo
-  in a directory name just becomes a file you didn't mean to write.
+  Any other non-flag argument is used as the output file path — but only if
+  it does not already exist. Existing files are never silently clobbered by
+  a positional argument; use --output (and --force) explicitly for that.
 
 Output:
   --output <path>       Write to a file instead of stdout. The output file
-                        is excluded from the scan, and an existing file is
-                        never overwritten unless you pass --force.
+                        is excluded from the scan, an existing file is
+                        never overwritten unless you pass --force, and
+                        symlinks are refused outright.
   --force, --overwrite  Allow overwriting an existing output file.
   --stdout-safe         Refuse to dump to an interactive terminal unless
                         --output is given.
@@ -644,19 +801,25 @@ Filtering:
   --exclude, --ignore <list>      Comma-separated names or paths to skip. Matching is
                         exact (file/dir name or path) - no globs.
   --max-size <size>     Skip files larger than this (B, KB, MB, GB, TB;
-                        e.g. 1MB, 500KB). Omit or 0 for no limit.
+                        e.g. 1MB, 500KB). Omit or 0 for no limit. Invalid
+                        values are an error, not "no limit".
   --include-binaries    Include binary files (skipped by default).
   --include-binary*     Alias for --include-binaries.
-  --follow-symlinks     Follow symlinks instead of skipping them.
+  --follow-symlinks     Read file symlinks instead of skipping them.
+                        Directory symlinks are still skipped (cycle safety),
+                        and special files (pipes/devices/sockets) always are.
   --include-venv        Stop auto-skipping .venv, venv, __pycache__,
                         node_modules (they're skipped by default).
   --omitted-disclaimer  Print the list of skipped files to stderr after the
                         scan finishes.
 
 Appearance:
-  --color, --highlight  Syntax-highlight the output (preference is saved).
+  --color, --highlight  Syntax-highlight the output (preference is saved;
+                        a saved preference only auto-applies on a real
+                        terminal, so pipes/files stay clean unless you ask).
   --no-color            Turn coloring off again (preference is saved).
   --theme <name>        Highlight theme; implies --color. Default: monokai.
+                        Invalid names are rejected; nothing is saved.
   --list-themes         Print every theme name accepted by --theme.
 
 Other:
@@ -672,9 +835,13 @@ Other:
   --help, -h            Print this help and exit.
 
 Always skipped: .git, target/, .DS_Store, ._*, symlinks (unless
---follow-symlinks), binaries (unless --include-binaries), secret files
-(.env*, id_rsa*/id_ed25519*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
-credentials, .netrc, .htpasswd, PEM private keys)
+--follow-symlinks), pipes/devices/sockets, binaries (unless
+--include-binaries), and secret-looking files: .env*, *.env, id_rsa*/
+id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
+*.keystore, *.kdbx, credentials*, client_secret*, *service-account*.json,
+secrets.*, .netrc, .htpasswd, .npmrc, .pypirc, .git-credentials, plus any
+file whose content contains a PEM private key block. Skipped files are
+listed with --omitted-disclaimer — check it before sharing a dump.
 
 Examples:
   everything --output snapshot.txt                recommended starting point
@@ -688,13 +855,11 @@ Examples:
   everything --omitted-disclaimer --output ctx.txt  see what got left out`)
 }
 
-func parseSize(s string) int64 {
-	s = strings.TrimSpace(s)
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToUpper(s))
 	if s == "" {
-		return 0
+		return 0, fmt.Errorf("empty size")
 	}
-
-	s = strings.ToUpper(s)
 
 	var multiplier int64 = 1
 	switch {
@@ -711,16 +876,22 @@ func parseSize(s string) int64 {
 		multiplier = 1 << 10
 		s = strings.TrimSuffix(s, "KB")
 	case strings.HasSuffix(s, "B"):
-		multiplier = 1
 		s = strings.TrimSuffix(s, "B")
 	}
 
-	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	s = strings.TrimSpace(s)
+	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("invalid size %q (expected e.g. 500KB, 1MB)", s)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("size must not be negative")
+	}
+	if multiplier > 1 && n > math.MaxInt64/multiplier {
+		return 0, fmt.Errorf("size overflows int64")
 	}
 
-	return n * multiplier
+	return n * multiplier, nil
 }
 
 //
@@ -737,12 +908,12 @@ func validateOutputPath(path string) error {
 	return nil
 }
 
-func setupOutput(cfg *Config) (io.Writer, func()) {
+func setupOutput(cfg *Config) (io.Writer, func() error) {
 	if cfg.OutputPath == "" {
 		if fi, err := os.Stdout.Stat(); err == nil {
 			cfg.stdoutInode = getInode(fi)
 		}
-		return os.Stdout, func() {}
+		return os.Stdout, func() error { return nil }
 	}
 
 	absOut, _ := filepath.Abs(cfg.OutputPath)
@@ -752,29 +923,38 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 		os.Exit(1)
 	}
 
-	cfg.Exclude[absOut] = true
-	cfg.Exclude[filepath.Base(cfg.OutputPath)] = true
 	cfg.excludeAbsPaths[absOut] = true
 
-	absProj, _ := filepath.Abs(".")
-	if strings.HasPrefix(absOut, filepath.Clean(absProj)+string(filepath.Separator)) {
-		cfg.Exclude[absOut] = true
-	}
-
-	if !cfg.Force {
-		if _, err := os.Stat(cfg.OutputPath); err == nil {
+	if fi, lstatErr := os.Lstat(cfg.OutputPath); lstatErr == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintf(os.Stderr, "Refusing to write through a symlink: %s\n", cfg.OutputPath)
+			os.Exit(1)
+		}
+		if !cfg.Force {
 			fmt.Fprintf(os.Stderr, "Refusing to overwrite existing file: %s. Use --force to overwrite.\n", cfg.OutputPath)
 			os.Exit(1)
 		}
 	}
 
-	f, err := os.Create(cfg.OutputPath)
+	f, err := os.OpenFile(cfg.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|outputNoFollow, 0o666)
 	if err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "error: cannot write output file %q: %v\n", cfg.OutputPath, err)
+		os.Exit(1)
+	}
+
+	if fi, statErr := f.Stat(); statErr == nil {
+		cfg.outputInode = getInode(fi)
 	}
 
 	bw := bufio.NewWriterSize(f, 256*1024)
-	return bw, func() { bw.Flush(); f.Close() }
+	return bw, func() error {
+		flushErr := bw.Flush()
+		closeErr := f.Close()
+		if flushErr != nil {
+			return flushErr
+		}
+		return closeErr
+	}
 }
 
 //
@@ -784,9 +964,12 @@ func setupOutput(cfg *Config) (io.Writer, func()) {
 func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	base := d.Name()
 
-	if cfg.stdoutInode != 0 {
-		if fi, err := os.Stat(path); err == nil && getInode(fi) == cfg.stdoutInode {
-			return true
+	if cfg.stdoutInode != 0 || cfg.outputInode != 0 || cfg.exeInode != 0 {
+		if fi, err := os.Stat(path); err == nil {
+			if ino := getInode(fi); ino != 0 &&
+				(ino == cfg.stdoutInode || ino == cfg.outputInode || ino == cfg.exeInode) {
+				return true
+			}
 		}
 	}
 
@@ -832,6 +1015,12 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 
 var secretExtensions = map[string]bool{
 	".pem": true, ".key": true, ".p12": true, ".pfx": true, ".jks": true,
+	".keystore": true, ".jceks": true, ".kdbx": true,
+}
+
+var secretDataExts = map[string]bool{
+	".json": true, ".yaml": true, ".yml": true, ".toml": true, ".ini": true,
+	".conf": true, ".cfg": true, ".txt": true, ".properties": true,
 }
 
 var binaryMagics = [][]byte{
@@ -852,16 +1041,30 @@ var binaryMagics = [][]byte{
 func isSecretFilename(name string) bool {
 	lower := strings.ToLower(name)
 
-	if strings.HasPrefix(lower, ".env") {
+	if strings.HasPrefix(lower, ".env") || strings.Contains(lower, ".env.") ||
+		strings.HasSuffix(lower, ".env") {
 		return true
 	}
 	if strings.HasPrefix(lower, "id_rsa") || strings.HasPrefix(lower, "id_ed25519") ||
 		strings.HasPrefix(lower, "id_dsa") || strings.HasPrefix(lower, "id_ecdsa") {
 		return true
 	}
-	if lower == ".htpasswd" || lower == ".netrc" || lower == "credentials.json" ||
-		lower == "credentials.yml" || lower == "credentials.yaml" {
+	switch lower {
+	case ".htpasswd", ".netrc", ".npmrc", ".pypirc", ".git-credentials", "credentials":
 		return true
+	}
+	if strings.HasPrefix(lower, "credentials.") || strings.HasPrefix(lower, "client_secret") ||
+		strings.HasPrefix(lower, "client-secret") {
+		return true
+	}
+	if (strings.Contains(lower, "service-account") || strings.Contains(lower, "service_account")) &&
+		filepath.Ext(lower) == ".json" {
+		return true
+	}
+	if lower == "secrets" || strings.HasPrefix(lower, "secrets.") {
+		if lower == "secrets" || secretDataExts[filepath.Ext(lower)] {
+			return true
+		}
 	}
 
 	ext := filepath.Ext(lower)
@@ -872,45 +1075,19 @@ func isSecretFilename(name string) bool {
 	return false
 }
 
-var pemPrivateKeyPrefix = []byte("-----BEGIN ")
+var pemBeginMarker = []byte("-----BEGIN")
+var pemPrivateKeyMarker = []byte("PRIVATE KEY")
 
-func looksLikePrivateKey(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-
-	bufp := keyBufPool.Get().(*[]byte)
-	buf := *bufp
-	n, err := f.Read(buf)
-	if err != nil || n < 10 {
-		keyBufPool.Put(bufp)
-		return false
-	}
-	buf = buf[:n]
-	result := looksLikePrivateKeySlice(buf)
-	keyBufPool.Put(bufp)
-	return result
-}
-
-func looksLikePrivateKeyData(data []byte) bool {
-	if len(data) < 10 {
-		return false
-	}
+func hasPrivateKeyMarker(data []byte) bool {
 	n := len(data)
-	if n > 128 {
-		n = 128
+	if n > 4096 {
+		n = 4096
 	}
-	return looksLikePrivateKeySlice(data[:n])
-}
-
-func looksLikePrivateKeySlice(buf []byte) bool {
-	if !bytes.HasPrefix(buf, pemPrivateKeyPrefix) {
+	window := bytes.TrimPrefix(data[:n], []byte{0xef, 0xbb, 0xbf})
+	if len(window) < 10 {
 		return false
 	}
-	upper := bytes.ToUpper(buf)
-	return bytes.Contains(upper, []byte("PRIVATE KEY"))
+	return bytes.Contains(window, pemBeginMarker) && bytes.Contains(window, pemPrivateKeyMarker)
 }
 
 //
@@ -919,42 +1096,201 @@ func looksLikePrivateKeySlice(buf []byte) bool {
 
 const peekSize = 8192
 
-func readFileFiltered(path string, includeBinaries bool) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
+func copyRest(w io.Writer, r io.Reader) {
+	bufp := lineBufPool.Get().(*[]byte)
+	_, _ = io.CopyBuffer(w, r, *bufp)
+	lineBufPool.Put(bufp)
+}
 
-	peekp := peekPool.Get().(*[]byte)
-	peek := *peekp
-	n, err := io.ReadFull(f, peek)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		peekPool.Put(peekp)
-		return nil, err
-	}
-	peek = peek[:n]
-
-	if !includeBinaries && isBinary(peek) {
-		peekPool.Put(peekp)
-		return nil, nil
-	}
-
-	if n < peekSize {
-		result := make([]byte, n)
-		copy(result, peek)
-		peekPool.Put(peekp)
-		return result, nil
-	}
-
+func readWholeFile(head []byte, f *os.File) []byte {
 	rest, err := io.ReadAll(f)
-	if err != nil {
-		peekPool.Put(peekp)
-		return nil, err
+	if err != nil && len(rest) == 0 {
+		out := make([]byte, len(head))
+		copy(out, head)
+		return out
+	}
+	out := make([]byte, 0, len(head)+len(rest))
+	out = append(out, head...)
+	out = append(out, rest...)
+	return out
+}
+
+const hexDigits = "0123456789abcdef"
+
+type jsonEscaper struct {
+	dst      io.Writer
+	pending  [utf8.UTFMax]byte
+	nPending int
+	err      error
+}
+
+func utf8SeqLen(b byte) int {
+	switch {
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 0
+	}
+}
+
+func (e *jsonEscaper) writeByteEscape(b byte) {
+	var esc [6]byte
+	esc[0], esc[1], esc[2], esc[3] = '\\', 'u', '0', '0'
+	esc[4], esc[5] = hexDigits[b>>4], hexDigits[b&0xf]
+	e.emitRaw(esc[:])
+}
+
+func (e *jsonEscaper) emitRaw(p []byte) {
+	if e.err != nil || len(p) == 0 {
+		return
+	}
+	_, e.err = e.dst.Write(p)
+}
+
+func (e *jsonEscaper) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, e.err
+	}
+	total := len(p)
+	data := p
+	if e.nPending > 0 {
+		data = make([]byte, 0, e.nPending+len(p))
+		data = append(data, e.pending[:e.nPending]...)
+		data = append(data, p...)
+	}
+	e.nPending = 0
+
+	holdFrom := len(data)
+	if n := len(data); n > 0 {
+		limit := n - utf8.UTFMax
+		if limit < 0 {
+			limit = 0
+		}
+		for i := n - 1; i >= limit; i-- {
+			b := data[i]
+			if b < 0x80 {
+				break
+			}
+			if b&0xC0 == 0x80 {
+				continue
+			}
+			if need := utf8SeqLen(b); need > 0 && i+need > n {
+				holdFrom = i
+			}
+			break
+		}
 	}
 
-	peekPool.Put(peekp)
-	return append(peek, rest...), nil
+	start := 0
+	flushTo := func(end int) {
+		if end > start {
+			e.emitRaw(data[start:end])
+			start = end
+		}
+	}
+
+	i := 0
+	for i < holdFrom && e.err == nil {
+		b := data[i]
+		if b >= 0x80 {
+			r, size := utf8.DecodeRune(data[i:])
+			if r == utf8.RuneError && size == 1 {
+				flushTo(i)
+				e.emitRaw([]byte(`\ufffd`))
+				i++
+				start = i
+				continue
+			}
+			i += size
+			continue
+		}
+
+		var esc []byte
+		switch b {
+		case '"':
+			esc = []byte(`\"`)
+		case '\\':
+			esc = []byte(`\\`)
+		case '\n':
+			esc = []byte(`\n`)
+		case '\r':
+			esc = []byte(`\r`)
+		case '\t':
+			esc = []byte(`\t`)
+		}
+		if esc != nil {
+			flushTo(i)
+			e.emitRaw(esc)
+			i++
+			start = i
+			continue
+		}
+		if b < 0x20 {
+			flushTo(i)
+			e.writeByteEscape(b)
+			i++
+			start = i
+			continue
+		}
+		i++
+	}
+	if e.err == nil {
+		flushTo(holdFrom)
+		e.nPending = copy(e.pending[:], data[holdFrom:])
+	} else {
+		e.nPending = 0
+	}
+
+	return total, e.err
+}
+
+func (e *jsonEscaper) Close() error {
+	if e.nPending > 0 {
+		e.nPending = 0
+		e.emitRaw([]byte(`\ufffd`))
+	}
+	return e.err
+}
+
+func writeJSONString(w io.Writer, s []byte) {
+	e := &jsonEscaper{dst: w}
+	e.Write(s)
+	e.Close()
+}
+
+func writeJSONLine(w io.Writer, path string, head []byte, rest io.Reader) {
+	pb, err := json.Marshal(path)
+	if err != nil {
+		return
+	}
+	w.Write([]byte(`{"path":`))
+	w.Write(pb)
+	w.Write([]byte(`,"content":"`))
+	e := &jsonEscaper{dst: w}
+	e.Write(head)
+	bufp := lineBufPool.Get().(*[]byte)
+	_, _ = io.CopyBuffer(e, rest, *bufp)
+	lineBufPool.Put(bufp)
+	e.Close()
+	w.Write([]byte("\"}\n"))
+}
+
+func emitHighlighted(w io.Writer, path string, data []byte, themeName string) {
+	lexer := matchLexer(path)
+	iterator, err := lexer.Tokenise(nil, string(data))
+	if err != nil {
+		w.Write(data)
+		return
+	}
+	formatter := formatters.Get("terminal")
+	if formatter == nil {
+		formatter = formatters.Fallback
+	}
+	formatter.Format(w, styles.Get(themeName), iterator)
 }
 
 func hasMagic(peek, magic []byte) bool {
