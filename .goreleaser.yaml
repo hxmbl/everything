@@ -47,7 +47,7 @@ brews:
   - name: everything
     repository:
       owner: Hxmbl
-      name: homebrew-everything
+      name: homebrew-tap
     commit_author:
       name: hxmbl
       email: hxmbl@users.noreply.github.com
