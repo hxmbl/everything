@@ -35,7 +35,7 @@ jobs:
       - name: Push Homebrew formula to tap
         run: |
           TAG="${GITHUB_REF_NAME}"
-          git clone git@github.com:Hxmbl/homebrew-everything.git /tmp/homebrew-tap
+          git clone git@github.com:Hxmbl/homebrew-tap.git /tmp/homebrew-tap
           cp dist/homebrew/everything.rb /tmp/homebrew-tap/everything.rb
           cd /tmp/homebrew-tap
           git config user.name "hxmbl"
