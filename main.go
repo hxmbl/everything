@@ -24,7 +24,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.7.0"
+var version = "v1.7.5"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -372,7 +372,7 @@ func runBenchmark(cfg *Config) {
 	printStat("Files:", formatNum(files))
 	printStat("Directories:", formatNum(dirs))
 	printStat("Bytes:", formatBytes(totalBytes))
-	printStat("Lines of Code:", formatNum(lines))
+	printStat("LOC:", formatNum(lines))
 	printStat("Characters:", formatNum(chars))
 	fmt.Println()
 
