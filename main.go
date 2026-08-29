@@ -24,7 +24,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.5.0"
+var version = "v1.7.0"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -303,9 +303,9 @@ func runBenchmark(cfg *Config) {
 	}
 
 	type runResult struct {
-		files, dirs, totalBytes, lines int64
-		elapsed                        time.Duration
-		memUsed                        int64
+		files, dirs, totalBytes, lines, chars int64
+		elapsed                                 time.Duration
+		memUsed                                 int64
 	}
 
 	results := make([]runResult, 0, runs)
@@ -316,7 +316,7 @@ func runBenchmark(cfg *Config) {
 		runtime.ReadMemStats(&memBefore)
 
 		start := time.Now()
-		files, dirs, totalBytes, lines := benchTraverse(cfg, walkDirs)
+		files, dirs, totalBytes, lines, chars := benchTraverse(cfg, walkDirs)
 		elapsed := time.Since(start)
 
 		var memAfter runtime.MemStats
@@ -326,10 +326,10 @@ func runBenchmark(cfg *Config) {
 			memUsed = 0
 		}
 
-		results = append(results, runResult{files, dirs, totalBytes, lines, elapsed, memUsed})
+		results = append(results, runResult{files, dirs, totalBytes, lines, chars, elapsed, memUsed})
 	}
 
-	var files, dirs, totalBytes, lines int64
+	var files, dirs, totalBytes, lines, chars int64
 	var durs []time.Duration
 	var sumDur time.Duration
 	var sumMem int64
@@ -338,6 +338,7 @@ func runBenchmark(cfg *Config) {
 		dirs = res.dirs
 		totalBytes = res.totalBytes
 		lines = res.lines
+		chars = res.chars
 		durs = append(durs, res.elapsed)
 		sumDur += res.elapsed
 		sumMem += res.memUsed
@@ -372,6 +373,7 @@ func runBenchmark(cfg *Config) {
 	printStat("Directories:", formatNum(dirs))
 	printStat("Bytes:", formatBytes(totalBytes))
 	printStat("Lines of Code:", formatNum(lines))
+	printStat("Characters:", formatNum(chars))
 	fmt.Println()
 
 	fmt.Printf("%-13s%d runs\n", "Traversal:", runs)
@@ -393,7 +395,7 @@ func runBenchmark(cfg *Config) {
 	fmt.Printf("version:     %s\n", version)
 }
 
-func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lines int64) {
+func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lines, chars int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -433,9 +435,42 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 				info = entryInfo
 			}
 
+			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
+				return nil
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return nil
+			}
+			defer f.Close()
+
+			peekp := peekPool.Get().(*[]byte)
+			peek := *peekp
+			n, err := io.ReadFull(f, peek)
+			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+				peekPool.Put(peekp)
+				return nil
+			}
+			peek = peek[:n]
+
+			if !cfg.IncludeBinaries && isBinary(peek) {
+				peekPool.Put(peekp)
+				return nil
+			}
+
+			if hasPrivateKeyMarker(peek) {
+				peekPool.Put(peekp)
+				return nil
+			}
+
+			fileLines, fileChars := countLinesAndChars(f, peek[:n])
+			peekPool.Put(peekp)
+
 			files++
 			totalBytes += info.Size()
-			lines += countLines(path)
+			lines += fileLines
+			chars += fileChars
 
 			return nil
 		})
@@ -443,43 +478,37 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 	return
 }
 
-func countLines(path string) int64 {
-	f, err := os.Open(path)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-
+func countLinesAndChars(f *os.File, head []byte) (int64, int64) {
 	bufp := lineBufPool.Get().(*[]byte)
 	buf := *bufp
-	n, err := io.ReadFull(f, buf)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		lineBufPool.Put(bufp)
-		return 0
-	}
-	if isBinary(buf[:n]) {
-		lineBufPool.Put(bufp)
-		return 0
+
+	n := copy(buf, head)
+	rest := head[n:]
+	if len(rest) > 0 {
+		n += copy(buf[n:], rest)
 	}
 
-	var total int64
+	var totalLines int64
+	var totalChars int64
 	last := byte('\n')
+
 	for {
 		for _, b := range buf[:n] {
 			if b == '\n' {
-				total++
+				totalLines++
 			}
 		}
+
+		runes := utf8.RuneCount(buf[:n])
+		totalChars += int64(runes)
+
 		if n > 0 {
 			last = buf[n-1]
 		}
 		if n < len(buf) {
 			break
 		}
-		n, err = f.Read(buf)
-		if err != nil && err != io.EOF {
-			break
-		}
+		n, _ = f.Read(buf)
 		if n == 0 {
 			break
 		}
@@ -487,10 +516,11 @@ func countLines(path string) int64 {
 	lineBufPool.Put(bufp)
 
 	if last != '\n' {
-		total++
+		totalLines++
 	}
-	return total
+	return totalLines, totalChars
 }
+
 
 func medianDuration(durs []time.Duration) time.Duration {
 	n := len(durs)
