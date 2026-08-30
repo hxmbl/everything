@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -24,7 +25,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.7.5"
+var version = "v1.8.0"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -61,6 +62,7 @@ type Config struct {
 	exeInode          uint64
 	Benchmark         bool
 	Runs              int
+	Warmup            int
 
 	excludeAbsPaths map[string]bool
 }
@@ -302,46 +304,74 @@ func runBenchmark(cfg *Config) {
 		runs = 1
 	}
 
+	warmup := cfg.Warmup
+	if warmup < 0 {
+		warmup = 0
+	}
+
 	type runResult struct {
-		files, dirs, totalBytes, lines, chars int64
-		elapsed                                 time.Duration
-		memUsed                                 int64
+		files, dirs, totalBytes, bytesRead, lines, chars int64
+		elapsed                                          time.Duration
+	}
+
+	// Sample live heap during the whole run to track its peak. ReadMemStats
+	// is cheap in modern Go, so the 2ms sampler perturbs timings by ~1%.
+	var peakHeap atomic.Int64
+	stopSampling := make(chan struct{})
+	var samplerDone sync.WaitGroup
+	samplerDone.Add(1)
+	go func() {
+		defer samplerDone.Done()
+		for {
+			select {
+			case <-stopSampling:
+				return
+			default:
+			}
+			var m runtime.MemStats
+			runtime.ReadMemStats(&m)
+			if a := int64(m.Alloc); a > peakHeap.Load() {
+				peakHeap.Store(a)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}()
+	defer func() {
+		close(stopSampling)
+		samplerDone.Wait()
+	}()
+
+	// Warmup passes: untimed, so the OS page cache and Go allocator are warm
+	// before the timed runs. Without this the first run is 2-3x slower (cold
+	// cache) and drags mean and median down.
+	for i := 0; i < warmup; i++ {
+		benchTraverse(cfg, walkDirs)
 	}
 
 	results := make([]runResult, 0, runs)
 
 	for r := 0; r < runs; r++ {
 		runtime.GC()
-		var memBefore runtime.MemStats
-		runtime.ReadMemStats(&memBefore)
 
 		start := time.Now()
-		files, dirs, totalBytes, lines, chars := benchTraverse(cfg, walkDirs)
+		files, dirs, totalBytes, bytesRead, lines, chars := benchTraverse(cfg, walkDirs)
 		elapsed := time.Since(start)
 
-		var memAfter runtime.MemStats
-		runtime.ReadMemStats(&memAfter)
-		memUsed := int64(memAfter.Alloc) - int64(memBefore.Alloc)
-		if memUsed < 0 {
-			memUsed = 0
-		}
-
-		results = append(results, runResult{files, dirs, totalBytes, lines, chars, elapsed, memUsed})
+		results = append(results, runResult{files, dirs, totalBytes, bytesRead, lines, chars, elapsed})
 	}
 
-	var files, dirs, totalBytes, lines, chars int64
+	var files, dirs, totalBytes, bytesRead, lines, chars int64
 	var durs []time.Duration
 	var sumDur time.Duration
-	var sumMem int64
 	for _, res := range results {
 		files = res.files
 		dirs = res.dirs
 		totalBytes = res.totalBytes
+		bytesRead = res.bytesRead
 		lines = res.lines
 		chars = res.chars
 		durs = append(durs, res.elapsed)
 		sumDur += res.elapsed
-		sumMem += res.memUsed
 	}
 
 	minDur := durs[0]
@@ -356,7 +386,6 @@ func runBenchmark(cfg *Config) {
 	}
 	medianDur := medianDuration(durs)
 	meanDur := sumDur / time.Duration(len(durs))
-	meanMem := sumMem / int64(len(durs))
 
 	pathLabel := strings.Join(walkDirs, ", ")
 	if pathLabel == "." {
@@ -367,11 +396,13 @@ func runBenchmark(cfg *Config) {
 	fmt.Println()
 	printStat("Path:", pathLabel)
 	printStat("Runs:", formatNum(int64(runs)))
+	printStat("Warmup:", formatNum(int64(warmup)))
 	fmt.Println()
 
 	printStat("Files:", formatNum(files))
 	printStat("Directories:", formatNum(dirs))
 	printStat("Bytes:", formatBytes(totalBytes))
+	printStat("Content read:", formatBytes(bytesRead))
 	printStat("LOC:", formatNum(lines))
 	printStat("Characters:", formatNum(chars))
 	fmt.Println()
@@ -383,19 +414,19 @@ func runBenchmark(cfg *Config) {
 	printStat("  max:", formatDuration(maxDur))
 	fmt.Println()
 
-	if meanDur > 0 {
-		printStat("Rate (mean):", fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/meanDur.Seconds()))))
-		fmt.Printf("%-13s%s/s\n", "", formatBytes(int64(float64(totalBytes)/meanDur.Seconds())))
+	if minDur > 0 {
+		printStat("Rate (min):", fmt.Sprintf("%s files/s", formatNum(int64(float64(files)/minDur.Seconds()))))
+		fmt.Printf("%-13s%s/s content\n", "", formatBytes(int64(float64(bytesRead)/minDur.Seconds())))
 	} else {
-		printStat("Rate (mean):", "n/a")
+		printStat("Rate (min):", "n/a")
 	}
 	fmt.Println()
-	printStat("Memory (mean):", formatBytes(meanMem))
+	printStat("Peak heap:", formatBytes(peakHeap.Load()))
 	fmt.Println()
 	fmt.Printf("version:     %s\n", version)
 }
 
-func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lines, chars int64) {
+func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, bytesRead, lines, chars int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -453,6 +484,7 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 				return nil
 			}
 			peek = peek[:n]
+			bytesRead += int64(n)
 
 			if !cfg.IncludeBinaries && isBinary(peek) {
 				peekPool.Put(peekp)
@@ -464,11 +496,12 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 				return nil
 			}
 
-			fileLines, fileChars := countLinesAndChars(f, peek[:n])
+			fileLines, fileChars, contentBytes := countLinesAndChars(f, peek)
 			peekPool.Put(peekp)
 
 			files++
 			totalBytes += info.Size()
+			bytesRead += contentBytes
 			lines += fileLines
 			chars += fileChars
 
@@ -478,49 +511,81 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, lin
 	return
 }
 
-func countLinesAndChars(f *os.File, head []byte) (int64, int64) {
+// utf8RuneCountCarry counts the runes in b and holds back any trailing bytes
+// that start a multi-byte sequence which may complete in a later read, so
+// counting stays exact across buffer boundaries. It returns the rune count of
+// the complete portion and how many trailing bytes to carry forward.
+func utf8RuneCountCarry(b []byte) (int64, int) {
+	n := len(b)
+	keep := 0
+	i := n - 1
+	for i >= 0 && b[i]&0xC0 == 0x80 {
+		i--
+	}
+	if i >= 0 {
+		if need := utf8SeqLen(b[i]); need > 1 {
+			if avail := n - i; avail < need {
+				keep = avail
+			}
+		}
+	}
+	if keep == 0 {
+		return int64(utf8.RuneCount(b)), 0
+	}
+	return int64(utf8.RuneCount(b[:n-keep])), keep
+}
+
+// countLinesAndChars counts newlines, runes, and bytes over the entire file,
+// starting from the already-read head and continuing from f until EOF. The
+// returned bytes count is only the content read beyond head (the peek length
+// is accounted for by the caller). Line counting mirrors the dump's trailing
+// newline semantics: a file not ending in '\n' gets one more line.
+func countLinesAndChars(f *os.File, head []byte) (lines, chars, contentBytes int64) {
 	bufp := lineBufPool.Get().(*[]byte)
 	buf := *bufp
+	defer lineBufPool.Put(bufp)
 
 	n := copy(buf, head)
-	rest := head[n:]
-	if len(rest) > 0 {
-		n += copy(buf[n:], rest)
-	}
 
 	var totalLines int64
 	var totalChars int64
 	last := byte('\n')
 
+	carryLen := 0
+
 	for {
-		for _, b := range buf[:n] {
-			if b == '\n' {
-				totalLines++
+		total := carryLen + n
+		if total > 0 {
+			for _, b := range buf[:total] {
+				if b == '\n' {
+					totalLines++
+				}
 			}
+			last = buf[total-1]
+
+			runes, keep := utf8RuneCountCarry(buf[:total])
+			totalChars += runes
+			if keep > 0 {
+				copy(buf[:keep], buf[total-keep:])
+			}
+			carryLen = keep
 		}
 
-		runes := utf8.RuneCount(buf[:n])
-		totalChars += int64(runes)
-
-		if n > 0 {
-			last = buf[n-1]
-		}
-		if n < len(buf) {
-			break
-		}
-		n, _ = f.Read(buf)
+		n, _ = f.Read(buf[carryLen:])
 		if n == 0 {
 			break
 		}
+		contentBytes += int64(n)
 	}
-	lineBufPool.Put(bufp)
 
+	if carryLen > 0 {
+		totalChars++ // trailing incomplete sequence counts as one rune
+	}
 	if last != '\n' {
 		totalLines++
 	}
-	return totalLines, totalChars
+	return totalLines, totalChars, contentBytes
 }
-
 
 func medianDuration(durs []time.Duration) time.Duration {
 	n := len(durs)
@@ -595,6 +660,7 @@ func parseArgs() *Config {
 		Exclude:         make(map[string]bool),
 		excludeAbsPaths: make(map[string]bool),
 		IgnoreVenv:      true,
+		Warmup:          1,
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -619,7 +685,7 @@ func parseArgs() *Config {
 		"--overwrite": true, "--json": true, "--omitted-disclaimer": true,
 		"--follow-symlinks": true, "--exclude": true, "--ignore": true,
 		"--max-size": true, "--version": true, "-v": true,
-		"--benchmark": true, "--bench": true, "--runs": true,
+		"--benchmark": true, "--bench": true, "--runs": true, "--warmup": true,
 		"--help": true, "-h": true,
 	}
 
@@ -764,6 +830,19 @@ func parseArgs() *Config {
 			}
 			cfg.Runs = n
 
+		case "--warmup":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --warmup requires an integer argument")
+				os.Exit(1)
+			}
+			n, err := strconv.Atoi(args[i])
+			if err != nil || n < 0 || n > 10000 {
+				fmt.Fprintln(os.Stderr, "error: --warmup requires a non-negative integer (max 10000)")
+				os.Exit(1)
+			}
+			cfg.Warmup = n
+
 		case "--help", "-h":
 			printHelp()
 			os.Exit(0)
@@ -854,13 +933,19 @@ Appearance:
 
 Other:
   --benchmark, --bench  Time a traversal instead of writing a snapshot.
-                          Reports file/dir counts, total bytes, lines of
-                          code, traversal rate, and memory used. A quick
-                          "view" of a project's size and how fast everything
-                          can scan it.
-  --runs <n>            With --benchmark, repeat the traversal n times and
-                          report min/median/mean/max traversal times, plus
-                          mean memory usage. Default: 1.
+                          Reads and counts the full content of every included
+                          file (same filtering as a real dump: max-size,
+                          binary and secret skipping), then reports file/dir
+                          counts, total logical bytes, bytes actually read,
+                          lines of code, characters, traversal rate, and peak
+                          heap used. A warmup pass runs first so timings
+                          reflect a warm OS page cache.
+  --runs <n>            With --benchmark, repeat the traversal n times after
+                          the warmup pass and report min/median/mean/max
+                          times. Rate uses min. Default: 1.
+  --warmup <n>          With --benchmark, untimed warmup passes before the
+                          timed ones (default: 1). Pass 0 to measure a cold
+                          cache.
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 

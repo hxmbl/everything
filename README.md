@@ -74,8 +74,9 @@ everything --color | less -R
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Read file symlinks (skipped by default; directory symlinks stay skipped, pipes/devices always skipped) | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
-| `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot (counts, total bytes, lines of code, characters, rate, memory) | `everything --benchmark`    |
-| `--runs <n>`               | With `--benchmark`, repeat traversal n times and report min/median/mean/max times + mean memory | `everything --benchmark --runs 5` |
+| `--benchmark`, `--bench`   | Time a traversal instead of writing a snapshot. Reads and counts the full content of every included file, then reports file/dir counts, logical bytes, content bytes read, lines of code, characters, traversal rate (at min), and peak heap | `everything --benchmark`    |
+| `--runs <n>`               | With `--benchmark`, repeat the traversal n times after a warmup pass and report min/median/mean/max times + peak heap | `everything --benchmark --runs 5` |
+| `--warmup <n>`             | With `--benchmark`, untimed warmup passes before the timed ones (default 1; pass 0 for a cold-cache measurement) | `everything --benchmark --warmup 0` |
 | `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
 | `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
 
@@ -160,17 +161,19 @@ Run with `--omitted-disclaimer` to see exactly what got skipped before you share
 
 ## Benchmark mode
 
-Don't want a dump? Just want to know how big your project is and how fast `everything` can walk it? Pass `--benchmark` and it skips the writing entirely — it just times the traversal and reports file/dir counts, total bytes, lines of code and characters, the traversal rate, and how much memory it used. Benchmark traversal applies the same filtering as a real dump (max-size, binary and secret-file skipping), so the numbers reflect what you'd actually get.
+Don't want a dump? Just want to know how big your project is and how fast `everything` can walk it? Pass `--benchmark` and it skips the writing entirely — it just times the traversal and reports file/dir counts, total logical bytes, bytes actually read from disk, lines of code and characters, the traversal rate, and peak heap used. Benchmark traversal applies the same filtering as a real dump (max-size, binary and secret-file skipping) and reads the *full content* of every included file, so the numbers reflect what you'd actually get — including the content-read cost.
 
 ```bash
 everything --benchmark
 ```
 
-Throw in `--runs <n>` to repeat the traversal n times and get a more stable read: it reports the min, median, mean, and max traversal times, plus mean memory usage. Handy for catching regressions or just flexing on slower tools.
+An untimed warmup pass runs first so the timed runs see a warm OS page cache (a cold first run can be 2-3x slower and would otherwise skew every stat). Throw in `--runs <n>` to repeat the traversal n times and get a more stable read: it reports the min, median, mean, and max traversal times plus peak heap. Rates are computed from the min (best-case, most reproducible) time.
 
 ```bash
 everything --benchmark --runs 5
 ```
+
+Pass `--warmup 0` if you specifically want to measure a cold cache.
 
 ---
 
