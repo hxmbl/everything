@@ -25,7 +25,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.8.0"
+var version = "v1.9.0"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -55,6 +55,7 @@ type Config struct {
 	Theme             string
 	FollowSymlinks    bool
 	JSON              bool
+	JSONL             bool
 	OmittedDisclaimer bool
 	SkippedFiles      []string
 	stdoutInode       uint64
@@ -157,6 +158,25 @@ func main() {
 
 	writer, cleanup := setupOutput(cfg)
 
+	jsonArray := cfg.JSON && !cfg.JSONL
+	jsonNeedComma := false
+	if jsonArray {
+		writer.Write([]byte("[\n"))
+	}
+	jsonSeparator := func() {
+		if jsonArray {
+			if jsonNeedComma {
+				writer.Write([]byte(",\n"))
+			}
+			jsonNeedComma = true
+		}
+	}
+	jsonClose := func() {
+		if jsonArray {
+			writer.Write([]byte("\n]\n"))
+		}
+	}
+
 	walkDirs := cfg.InputDirs
 	if len(walkDirs) == 0 {
 		walkDirs = []string{"."}
@@ -252,7 +272,12 @@ func main() {
 			useHighlight := cfg.Color && info.Size() <= highlightLimit
 
 			if cfg.JSON {
-				writeJSONLine(writer, path, peek, f)
+				jsonSeparator()
+				if jsonArray {
+					writeJSONRecord(writer, path, peek, f)
+				} else {
+					writeJSONLine(writer, path, peek, f)
+				}
 			} else {
 				fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
 				if useHighlight {
@@ -269,11 +294,14 @@ func main() {
 		})
 
 		if err != nil {
+			jsonClose()
 			fmt.Fprintln(os.Stderr, "error: traversal failed:", err)
 			_ = cleanup()
 			os.Exit(1)
 		}
 	}
+
+	jsonClose()
 
 	if err := cleanup(); err != nil {
 		fmt.Fprintln(os.Stderr, "error writing output:", err)
@@ -676,13 +704,15 @@ func parseArgs() *Config {
 	}
 
 	colorExplicit := false
+	jsonExplicit := false
+	jsonlExplicit := false
 
 	knownFlags := map[string]bool{
 		"--output": true, "--ignore-venv": true, "--include-venv": true,
 		"--include-binary": true, "--include-binaries": true, "--theme": true,
 		"--list-themes": true, "--color": true, "--highlight": true,
 		"--no-color": true, "--stdout-safe": true, "--force": true,
-		"--overwrite": true, "--json": true, "--omitted-disclaimer": true,
+		"--overwrite": true, "--json": true, "--jsonl": true, "--omitted-disclaimer": true,
 		"--follow-symlinks": true, "--exclude": true, "--ignore": true,
 		"--max-size": true, "--version": true, "-v": true,
 		"--benchmark": true, "--bench": true, "--runs": true, "--warmup": true,
@@ -777,6 +807,12 @@ func parseArgs() *Config {
 
 		case "--json":
 			cfg.JSON = true
+			jsonExplicit = true
+
+		case "--jsonl":
+			cfg.JSON = true
+			cfg.JSONL = true
+			jsonlExplicit = true
 
 		case "--omitted-disclaimer":
 			cfg.OmittedDisclaimer = true
@@ -853,6 +889,11 @@ func parseArgs() *Config {
 		}
 	}
 
+	if jsonExplicit && jsonlExplicit {
+		fmt.Fprintln(os.Stderr, "error: --json and --jsonl are mutually exclusive")
+		os.Exit(1)
+	}
+
 	if !colorExplicit && cfg.OutputPath == "" && loadSavedColor() && isInteractive() {
 		cfg.Color = true
 	}
@@ -903,8 +944,12 @@ Output:
   --force, --overwrite  Allow overwriting an existing output file.
   --stdout-safe         Refuse to dump to an interactive terminal unless
                         --output is given.
-  --json                Emit JSON Lines (one {"path","content"} object per
-                        line). No tree banner, no color.
+  --json                Emit one JSON document: an array of {"path","content"}
+                        objects, streamed to disk (no in-memory whole-output
+                        buffering). No tree banner, no color.
+  --jsonl               Emit JSON Lines instead: one {"path","content"}
+                        object per line. Implies --json; mutually exclusive
+                        with it. Pairs well with jq -s / streaming parsers.
 
 Filtering:
   --exclude, --ignore <list>      Comma-separated names or paths to skip. Matching is
@@ -964,7 +1009,8 @@ Examples:
   everything src/ lib/ --output ctx.txt           scan specific directories
   everything --exclude "vendor,tmp" --force --output clean.txt
   everything --max-size 1MB --output trimmed.txt   skip big files
-  everything --json --output out.jsonl            for scripts
+  everything --json --output out.json              one JSON document (array)
+  everything --jsonl --output out.jsonl            JSON Lines for scripts
   everything --color | less -R                    paged, highlighted viewing
   everything | grep "TODO"                        search the whole project
   everything --omitted-disclaimer --output ctx.txt  see what got left out`)
@@ -1378,6 +1424,11 @@ func writeJSONString(w io.Writer, s []byte) {
 }
 
 func writeJSONLine(w io.Writer, path string, head []byte, rest io.Reader) {
+	writeJSONRecord(w, path, head, rest)
+	w.Write([]byte("\n"))
+}
+
+func writeJSONRecord(w io.Writer, path string, head []byte, rest io.Reader) {
 	pb, err := json.Marshal(path)
 	if err != nil {
 		return
@@ -1391,7 +1442,7 @@ func writeJSONLine(w io.Writer, path string, head []byte, rest io.Reader) {
 	_, _ = io.CopyBuffer(e, rest, *bufp)
 	lineBufPool.Put(bufp)
 	e.Close()
-	w.Write([]byte("\"}\n"))
+	w.Write([]byte("\"}"))
 }
 
 func emitHighlighted(w io.Writer, path string, data []byte, themeName string) {

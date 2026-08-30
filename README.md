@@ -70,7 +70,8 @@ everything --color | less -R
 | `--list-themes`            | List all available color themes                              | `--list-themes`                        |
 | `--ignore-venv`            | (on by default) Skip `.venv`, `venv`, `__pycache__`, `node_modules` | `--ignore-venv`                        |
 | `--include-venv`           | Disable auto-venv skipping                                   | `--include-venv`                       |
-| `--json`                   | Output JSONL (one `{"path","content"}` object per line)      | `everything --json`                    |
+| `--json`                   | Output one JSON document: an array of `{"path","content"}` objects, streamed to disk | `everything --json --output out.json` |
+| `--jsonl`                  | Output JSON Lines (one `{"path","content"}` object per line) | `everything --jsonl --output out.jsonl` |
 | `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
 | `--follow-symlinks`        | Read file symlinks (skipped by default; directory symlinks stay skipped, pipes/devices always skipped) | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump raw to an interactive terminal without `--output` | `--stdout-safe`                    |
@@ -102,8 +103,11 @@ everything --color | less -R
 # Skip large generated files
 everything --max-size 100KB --output clean.txt
 
-# JSONL for scripts (one {"path","content"} per line)
-everything --json --output feed.jsonl
+# One JSON document (array of {"path","content"} objects)
+everything --json --output out.json
+
+# ...or JSON Lines for scripts (streaming, one object per line)
+everything --jsonl --output feed.jsonl
 
 # Share project structure + contents
 everything --output audit.txt

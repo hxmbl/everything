@@ -181,6 +181,23 @@ func TestWriteJSONLineValid(t *testing.T) {
 	}
 }
 
+func TestWriteJSONRecordNoTrailingNewline(t *testing.T) {
+	var buf bytes.Buffer
+	content := "a\nbb \"q\" cc"
+	head := []byte(content[:4])
+	rest := strings.NewReader(content[4:])
+	writeJSONRecord(&buf, "x/y.txt", head, rest)
+
+	got := buf.String()
+	want := `{"path":"x/y.txt","content":"a\nbb \"q\" cc"}`
+	if got != want {
+		t.Fatalf("record mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if json.Unmarshal([]byte(got), &map[string]any{}) != nil {
+		t.Fatalf("record is not valid JSON: %q", got)
+	}
+}
+
 func TestJSONEscaperChunkedUTF8(t *testing.T) {
 	var buf bytes.Buffer
 	e := &jsonEscaper{dst: &buf}
