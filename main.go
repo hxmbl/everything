@@ -1,3 +1,7 @@
+// Package everything is a tool for dumping entire project directories into a single file.
+// It recursively walks directories and outputs file paths and contents, making it useful
+// for feeding code to LLMs, code review preparation, or creating project snapshots.
+// The tool automatically skips binaries, secrets, and common build artifacts.
 package main
 
 import (
@@ -25,7 +29,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.9.0"
+var version = "v1.9.1"
 
 var (
 	peekPool = sync.Pool{New: func() any {
@@ -40,6 +44,8 @@ var (
 	lexerCache sync.Map
 )
 
+// Config holds the configuration for the everything tool.
+// It includes input/output paths, filtering options, and display preferences.
 type Config struct {
 	OutputPath string
 	InputDirs  []string
@@ -68,12 +74,16 @@ type Config struct {
 	excludeAbsPaths map[string]bool
 }
 
+// recordSkip records a skip message if OmittedDisclaimer is enabled.
+// This is used to track which files were skipped and why.
 func (cfg *Config) recordSkip(msg string) {
 	if cfg.OmittedDisclaimer {
 		cfg.SkippedFiles = append(cfg.SkippedFiles, msg)
 	}
 }
 
+// isInteractive checks if stdout is connected to an interactive terminal.
+// This is used to determine whether to apply color output or warn about large dumps.
 func isInteractive() bool {
 	fi, err := os.Stdout.Stat()
 	if err != nil {
@@ -105,6 +115,8 @@ func filterTreeLine(line string) bool {
 	return isSecretFilename(name)
 }
 
+// tryPrintTree attempts to print a directory tree using the 'tree' command if available.
+// It filters out secret files and directories from the output.
 func tryPrintTree(writer io.Writer, roots []string) {
 	bin, err := exec.LookPath("tree")
 	if err != nil {
@@ -138,6 +150,8 @@ func tryPrintTree(writer io.Writer, roots []string) {
 	}
 }
 
+// main is the entry point for the everything tool.
+// It parses arguments, configures output, and runs the directory traversal.
 func main() {
 	cfg := parseArgs()
 
@@ -161,19 +175,26 @@ func main() {
 	jsonArray := cfg.JSON && !cfg.JSONL
 	jsonNeedComma := false
 	if jsonArray {
-		writer.Write([]byte("[\n"))
+		if _, err := writer.Write([]byte("[\n")); err != nil {
+			fmt.Fprintln(os.Stderr, "error writing json array start:", err)
+			os.Exit(1)
+		}
 	}
 	jsonSeparator := func() {
 		if jsonArray {
 			if jsonNeedComma {
-				writer.Write([]byte(",\n"))
+				if _, err := writer.Write([]byte(",\n")); err != nil {
+					fmt.Fprintln(os.Stderr, "error writing json separator:", err)
+				}
 			}
 			jsonNeedComma = true
 		}
 	}
 	jsonClose := func() {
 		if jsonArray {
-			writer.Write([]byte("\n]\n"))
+			if _, err := writer.Write([]byte("\n]\n")); err != nil {
+				fmt.Fprintln(os.Stderr, "error writing json array end:", err)
+			}
 		}
 	}
 
@@ -207,33 +228,12 @@ func main() {
 				return nil
 			}
 
-			var info os.FileInfo
-			if d.Type()&os.ModeSymlink != 0 {
-				if !cfg.FollowSymlinks {
-					cfg.recordSkip(fmt.Sprintf("  symlink: %s", path))
-					return nil
-				}
-				target, statErr := os.Stat(path)
-				if statErr != nil {
-					return nil
-				}
-				if target.IsDir() {
-					cfg.recordSkip(fmt.Sprintf("  dir symlink: %s", path))
-					return nil
-				}
-				if !target.Mode().IsRegular() {
-					return nil
-				}
-				info = target
-			} else {
-				if !d.Type().IsRegular() {
-					return nil
-				}
-				entryInfo, infoErr := d.Info()
-				if infoErr != nil {
-					return nil
-				}
-				info = entryInfo
+			info, err := getFileInfo(path, d, cfg)
+			if err != nil {
+				return nil
+			}
+			if info == nil {
+				return nil
 			}
 
 			if cfg.MaxSize > 0 && info.Size() > cfg.MaxSize {
@@ -241,62 +241,15 @@ func main() {
 				return nil
 			}
 
-			f, err := os.Open(path)
-			if err != nil {
-				return nil
-			}
-			defer f.Close()
-
-			peekp := peekPool.Get().(*[]byte)
-			peek := *peekp
-			n, err := io.ReadFull(f, peek)
-			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-				peekPool.Put(peekp)
-				return nil
-			}
-			peek = peek[:n]
-
-			if !cfg.IncludeBinaries && isBinary(peek) {
-				peekPool.Put(peekp)
-				cfg.recordSkip(fmt.Sprintf("  binary: %s", path))
-				return nil
-			}
-
-			if hasPrivateKeyMarker(peek) {
-				peekPool.Put(peekp)
-				cfg.recordSkip(fmt.Sprintf("  secret: %s", path))
-				return nil
-			}
-
-			const highlightLimit = 1 << 20
-			useHighlight := cfg.Color && info.Size() <= highlightLimit
-
-			if cfg.JSON {
-				jsonSeparator()
-				if jsonArray {
-					writeJSONRecord(writer, path, peek, f)
-				} else {
-					writeJSONLine(writer, path, peek, f)
-				}
-			} else {
-				fmt.Fprintf(writer, "==== FILE: %s ====\n", path)
-				if useHighlight {
-					emitHighlighted(writer, path, readWholeFile(peek, f), cfg.Theme)
-				} else {
-					writer.Write(peek)
-					copyRest(writer, f)
-				}
-				writer.Write([]byte("\n\n"))
-			}
-			peekPool.Put(peekp)
-
-			return nil
+			return processFile(path, info, writer, cfg, jsonArray, jsonSeparator, jsonClose)
 		})
 
 		if err != nil {
 			jsonClose()
 			fmt.Fprintln(os.Stderr, "error: traversal failed:", err)
-			_ = cleanup()
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				fmt.Fprintln(os.Stderr, "error writing output:", cleanupErr)
+			}
 			os.Exit(1)
 		}
 	}
@@ -321,6 +274,8 @@ func main() {
 // BENCHMARK
 //
 
+// runBenchmark executes a benchmark traversal of the configured directories.
+// It measures file counts, sizes, lines of code, and traversal speed across multiple runs.
 func runBenchmark(cfg *Config) {
 	walkDirs := cfg.InputDirs
 	if len(walkDirs) == 0 {
@@ -454,6 +409,8 @@ func runBenchmark(cfg *Config) {
 	fmt.Printf("version:     %s\n", version)
 }
 
+// benchTraverse performs a single benchmark traversal, counting files, directories, bytes, lines, and characters.
+// It applies the same filtering as a real dump but doesn't write output.
 func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, bytesRead, lines, chars int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -599,8 +556,9 @@ func countLinesAndChars(f *os.File, head []byte) (lines, chars, contentBytes int
 			carryLen = keep
 		}
 
-		n, _ = f.Read(buf[carryLen:])
-		if n == 0 {
+		var readErr error
+		n, readErr = f.Read(buf[carryLen:])
+		if readErr != nil && n == 0 {
 			break
 		}
 		contentBytes += int64(n)
@@ -683,6 +641,142 @@ func formatDuration(d time.Duration) string {
 // CONFIG
 //
 
+// getFileInfo retrieves file information, handling symlinks and special files.
+// Returns nil if the file should be skipped.
+func getFileInfo(path string, d os.DirEntry, cfg *Config) (os.FileInfo, error) {
+	var info os.FileInfo
+	if d.Type()&os.ModeSymlink != 0 {
+		if !cfg.FollowSymlinks {
+			cfg.recordSkip(fmt.Sprintf("  symlink: %s", path))
+			return nil, nil
+		}
+		target, statErr := os.Stat(path)
+		if statErr != nil {
+			return nil, nil
+		}
+		if target.IsDir() {
+			cfg.recordSkip(fmt.Sprintf("  dir symlink: %s", path))
+			return nil, nil
+		}
+		if !target.Mode().IsRegular() {
+			return nil, nil
+		}
+		info = target
+	} else {
+		if !d.Type().IsRegular() {
+			return nil, nil
+		}
+		entryInfo, infoErr := d.Info()
+		if infoErr != nil {
+			return nil, nil
+		}
+		info = entryInfo
+	}
+	return info, nil
+}
+
+// processFile handles the actual file reading and writing based on configuration.
+// It manages JSON output, syntax highlighting, and error handling.
+func processFile(path string, info os.FileInfo, writer io.Writer, cfg *Config, jsonArray bool, jsonSeparator func(), jsonClose func()) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+
+	peekp := peekPool.Get().(*[]byte)
+	peek := *peekp
+	n, err := io.ReadFull(f, peek)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		peekPool.Put(peekp)
+		return nil
+	}
+	peek = peek[:n]
+
+	if !cfg.IncludeBinaries && isBinary(peek) {
+		peekPool.Put(peekp)
+		cfg.recordSkip(fmt.Sprintf("  binary: %s", path))
+		return nil
+	}
+
+	if hasPrivateKeyMarker(peek) {
+		peekPool.Put(peekp)
+		cfg.recordSkip(fmt.Sprintf("  secret: %s", path))
+		return nil
+	}
+
+	const highlightLimit = 1 << 20
+	useHighlight := cfg.Color && info.Size() <= highlightLimit
+
+	if cfg.JSON {
+		jsonSeparator()
+		if jsonArray {
+			if err := writeJSONRecord(writer, path, peek, f); err != nil {
+				cfg.recordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
+			}
+		} else {
+			if err := writeJSONLine(writer, path, peek, f); err != nil {
+				cfg.recordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
+			}
+		}
+	} else {
+		if _, err := fmt.Fprintf(writer, "==== FILE: %s ====\n", path); err != nil {
+			cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+		}
+		if useHighlight {
+			data, err := readWholeFile(peek, f)
+			if err != nil {
+				cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
+				if _, writeErr := writer.Write(peek); writeErr != nil {
+					cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
+				}
+				if copyErr := copyRest(writer, f); copyErr != nil {
+					cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, copyErr))
+				}
+			} else {
+				if err := emitHighlighted(writer, path, data, cfg.Theme); err != nil {
+					cfg.recordSkip(fmt.Sprintf("  highlight error: %s: %v", path, err))
+					if _, writeErr := writer.Write(data); writeErr != nil {
+						cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
+					}
+				}
+			}
+		} else {
+			if _, err := writer.Write(peek); err != nil {
+				cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+			}
+			if err := copyRest(writer, f); err != nil {
+				cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
+			}
+		}
+		if _, err := writer.Write([]byte("\n\n")); err != nil {
+			cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+		}
+	}
+	peekPool.Put(peekp)
+	return nil
+}
+
+// validateConfig performs final validation on the parsed configuration.
+// It checks for conflicting options and invalid combinations.
+func validateConfig(cfg *Config) error {
+	if cfg.JSON && cfg.JSONL {
+		return fmt.Errorf("--json and --jsonl are mutually exclusive")
+	}
+	if cfg.MaxSize < 0 {
+		return fmt.Errorf("--max-size must be non-negative")
+	}
+	if cfg.Runs < 0 || cfg.Runs > 10000 {
+		return fmt.Errorf("--runs must be between 0 and 10000")
+	}
+	if cfg.Warmup < 0 || cfg.Warmup > 10000 {
+		return fmt.Errorf("--warmup must be between 0 and 10000")
+	}
+	return nil
+}
+
+// parseArgs parses command-line arguments and returns a Config struct.
+// It handles all flags, validation, and default values.
 func parseArgs() *Config {
 	cfg := &Config{
 		Exclude:         make(map[string]bool),
@@ -704,8 +798,6 @@ func parseArgs() *Config {
 	}
 
 	colorExplicit := false
-	jsonExplicit := false
-	jsonlExplicit := false
 
 	knownFlags := map[string]bool{
 		"--output": true, "--ignore-venv": true, "--include-venv": true,
@@ -781,7 +873,9 @@ func parseArgs() *Config {
 			}
 			cfg.Theme = args[i]
 			cfg.Color = true
-			saveTheme(cfg.Theme)
+			if err := saveTheme(cfg.Theme); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: failed to save theme preference:", err)
+			}
 
 		case "--list-themes":
 			for _, name := range styles.Names() {
@@ -792,12 +886,16 @@ func parseArgs() *Config {
 		case "--color", "--highlight":
 			cfg.Color = true
 			colorExplicit = true
-			saveColor(true)
+			if err := saveColor(true); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: failed to save color preference:", err)
+			}
 
 		case "--no-color":
 			cfg.Color = false
 			colorExplicit = true
-			saveColor(false)
+			if err := saveColor(false); err != nil {
+				fmt.Fprintln(os.Stderr, "warning: failed to save color preference:", err)
+			}
 
 		case "--stdout-safe":
 			cfg.StdoutSafe = true
@@ -807,12 +905,10 @@ func parseArgs() *Config {
 
 		case "--json":
 			cfg.JSON = true
-			jsonExplicit = true
 
 		case "--jsonl":
 			cfg.JSON = true
 			cfg.JSONL = true
-			jsonlExplicit = true
 
 		case "--omitted-disclaimer":
 			cfg.OmittedDisclaimer = true
@@ -889,8 +985,8 @@ func parseArgs() *Config {
 		}
 	}
 
-	if jsonExplicit && jsonlExplicit {
-		fmt.Fprintln(os.Stderr, "error: --json and --jsonl are mutually exclusive")
+	if err := validateConfig(cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
@@ -910,6 +1006,7 @@ func parseArgs() *Config {
 	return cfg
 }
 
+// validTheme checks if a theme name is valid by comparing against available chroma styles.
 func validTheme(name string) bool {
 	lower := strings.ToLower(name)
 	for _, n := range styles.Names() {
@@ -920,6 +1017,7 @@ func validTheme(name string) bool {
 	return false
 }
 
+// printHelp prints the help message to stdout.
 func printHelp() {
 	fmt.Println(`everything – dump your project into a flat file
 
@@ -1016,6 +1114,8 @@ Examples:
   everything --omitted-disclaimer --output ctx.txt  see what got left out`)
 }
 
+// parseSize parses a human-readable size string (e.g., "1MB", "500KB") into bytes.
+// Returns an error if the format is invalid or the value overflows int64.
 func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(strings.ToUpper(s))
 	if s == "" {
@@ -1059,6 +1159,8 @@ func parseSize(s string) (int64, error) {
 // OUTPUT SAFETY
 //
 
+// validateOutputPath checks if the output path is safe to write to.
+// It refuses to write to device files like /dev/stdin, /dev/stdout, /dev/stderr.
 func validateOutputPath(path string) error {
 	if path == "/dev/stdin" || path == "/dev/stdout" || path == "/dev/stderr" {
 		return fmt.Errorf("refusing to write to %s", path)
@@ -1069,6 +1171,8 @@ func validateOutputPath(path string) error {
 	return nil
 }
 
+// setupOutput configures the output writer based on the configuration.
+// Returns the writer and a cleanup function that should be called when done.
 func setupOutput(cfg *Config) (io.Writer, func() error) {
 	if cfg.OutputPath == "" {
 		if fi, err := os.Stdout.Stat(); err == nil {
@@ -1122,6 +1226,8 @@ func setupOutput(cfg *Config) (io.Writer, func() error) {
 // SKIP LOGIC (unified = single source of truth)
 //
 
+// shouldSkip determines if a file or directory should be skipped during traversal.
+// It checks inode conflicts, built-in skip patterns, user exclusions, and secret files.
 func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 	base := d.Name()
 
@@ -1199,6 +1305,8 @@ var binaryMagics = [][]byte{
 	{0xcf, 0xfa, 0xed, 0xfe},
 }
 
+// isSecretFilename checks if a filename matches known secret file patterns.
+// This includes environment files, SSH keys, certificates, and credential files.
 func isSecretFilename(name string) bool {
 	lower := strings.ToLower(name)
 
@@ -1239,6 +1347,8 @@ func isSecretFilename(name string) bool {
 var pemBeginMarker = []byte("-----BEGIN")
 var pemPrivateKeyMarker = []byte("PRIVATE KEY")
 
+// hasPrivateKeyMarker checks if data contains a PEM private key block.
+// It looks for "-----BEGIN" followed by "PRIVATE KEY" within the first 4KB.
 func hasPrivateKeyMarker(data []byte) bool {
 	n := len(data)
 	if n > 4096 {
@@ -1257,27 +1367,34 @@ func hasPrivateKeyMarker(data []byte) bool {
 
 const peekSize = 8192
 
-func copyRest(w io.Writer, r io.Reader) {
+// copyRest copies the remaining content from reader to writer using a pooled buffer.
+// Returns any error that occurs during the copy operation.
+func copyRest(w io.Writer, r io.Reader) error {
 	bufp := lineBufPool.Get().(*[]byte)
-	_, _ = io.CopyBuffer(w, r, *bufp)
+	_, err := io.CopyBuffer(w, r, *bufp)
 	lineBufPool.Put(bufp)
+	return err
 }
 
-func readWholeFile(head []byte, f *os.File) []byte {
+// readWholeFile reads the entire file content, combining the already-read head with the rest.
+// Returns the combined data and any error that occurred while reading the rest.
+func readWholeFile(head []byte, f *os.File) ([]byte, error) {
 	rest, err := io.ReadAll(f)
 	if err != nil && len(rest) == 0 {
 		out := make([]byte, len(head))
 		copy(out, head)
-		return out
+		return out, err
 	}
 	out := make([]byte, 0, len(head)+len(rest))
 	out = append(out, head...)
 	out = append(out, rest...)
-	return out
+	return out, nil
 }
 
 const hexDigits = "0123456789abcdef"
 
+// jsonEscaper is a custom JSON string escaper that handles UTF-8 encoding correctly.
+// It ensures that multi-byte UTF-8 sequences are not split across escape boundaries.
 type jsonEscaper struct {
 	dst      io.Writer
 	pending  [utf8.UTFMax]byte
@@ -1285,6 +1402,8 @@ type jsonEscaper struct {
 	err      error
 }
 
+// utf8SeqLen returns the expected length of a UTF-8 sequence starting with byte b.
+// Returns 0 if b is not a valid UTF-8 sequence start byte.
 func utf8SeqLen(b byte) int {
 	switch {
 	case b&0xE0 == 0xC0:
@@ -1417,48 +1536,74 @@ func (e *jsonEscaper) Close() error {
 	return e.err
 }
 
+// writeJSONString writes a byte slice as a JSON string to the writer.
+// It handles UTF-8 encoding and proper JSON escaping.
 func writeJSONString(w io.Writer, s []byte) {
 	e := &jsonEscaper{dst: w}
 	e.Write(s)
 	e.Close()
 }
 
-func writeJSONLine(w io.Writer, path string, head []byte, rest io.Reader) {
-	writeJSONRecord(w, path, head, rest)
-	w.Write([]byte("\n"))
+// writeJSONLine writes a single JSON line record with path and content.
+// It returns an error if writing fails.
+func writeJSONLine(w io.Writer, path string, head []byte, rest io.Reader) error {
+	if err := writeJSONRecord(w, path, head, rest); err != nil {
+		return err
+	}
+	_, err := w.Write([]byte("\n"))
+	return err
 }
 
-func writeJSONRecord(w io.Writer, path string, head []byte, rest io.Reader) {
+// writeJSONRecord writes a JSON record with path and content fields.
+// It handles the file content in a streaming fashion to avoid loading large files into memory.
+func writeJSONRecord(w io.Writer, path string, head []byte, rest io.Reader) error {
 	pb, err := json.Marshal(path)
 	if err != nil {
-		return
+		return err
 	}
-	w.Write([]byte(`{"path":`))
-	w.Write(pb)
-	w.Write([]byte(`,"content":"`))
+	if _, err := w.Write([]byte(`{"path":`)); err != nil {
+		return err
+	}
+	if _, err := w.Write(pb); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(`,"content":"`)); err != nil {
+		return err
+	}
 	e := &jsonEscaper{dst: w}
-	e.Write(head)
+	if _, err := e.Write(head); err != nil {
+		return err
+	}
 	bufp := lineBufPool.Get().(*[]byte)
-	_, _ = io.CopyBuffer(e, rest, *bufp)
+	if _, err := io.CopyBuffer(e, rest, *bufp); err != nil {
+		lineBufPool.Put(bufp)
+		return err
+	}
 	lineBufPool.Put(bufp)
-	e.Close()
-	w.Write([]byte("\"}"))
+	if err := e.Close(); err != nil {
+		return err
+	}
+	_, err = w.Write([]byte("\"}"))
+	return err
 }
 
-func emitHighlighted(w io.Writer, path string, data []byte, themeName string) {
+// emitHighlighted applies syntax highlighting to the file content and writes it to the writer.
+// It uses chroma lexers and formatters to detect the language and apply the theme.
+func emitHighlighted(w io.Writer, path string, data []byte, themeName string) error {
 	lexer := matchLexer(path)
 	iterator, err := lexer.Tokenise(nil, string(data))
 	if err != nil {
-		w.Write(data)
-		return
+		_, err = w.Write(data)
+		return err
 	}
 	formatter := formatters.Get("terminal")
 	if formatter == nil {
 		formatter = formatters.Fallback
 	}
-	formatter.Format(w, styles.Get(themeName), iterator)
+	return formatter.Format(w, styles.Get(themeName), iterator)
 }
 
+// hasMagic checks if the peek bytes start with the given magic sequence.
 func hasMagic(peek, magic []byte) bool {
 	if len(peek) < len(magic) {
 		return false
@@ -1471,6 +1616,8 @@ func hasMagic(peek, magic []byte) bool {
 	return true
 }
 
+// matchLexer finds the appropriate chroma lexer for a file based on its path.
+// It caches lexers by file extension to avoid repeated lookups.
 func matchLexer(path string) chroma.Lexer {
 	ext := filepath.Ext(path)
 	if v, ok := lexerCache.Load(ext); ok {
@@ -1485,6 +1632,8 @@ func matchLexer(path string) chroma.Lexer {
 	return lexer
 }
 
+// isBinary checks if the file content appears to be binary based on magic bytes and control character density.
+// Returns true if the content matches known binary signatures or has too many control characters.
 func isBinary(peek []byte) bool {
 	for _, m := range binaryMagics {
 		if len(peek) >= len(m) && hasMagic(peek, m) {
@@ -1508,6 +1657,7 @@ func isBinary(peek []byte) bool {
 	return float64(controlCount)/float64(len(peek)) > 0.10
 }
 
+// colorCachePath returns the path to the color preference cache file.
 func colorCachePath() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -1516,6 +1666,8 @@ func colorCachePath() string {
 	return filepath.Join(cacheDir, "everything", "color")
 }
 
+// loadSavedColor loads the saved color preference from the cache file.
+// Returns false if the file doesn't exist or cannot be read.
 func loadSavedColor() bool {
 	data, err := os.ReadFile(colorCachePath())
 	if err != nil {
@@ -1524,19 +1676,24 @@ func loadSavedColor() bool {
 	return strings.TrimSpace(string(data)) == "true"
 }
 
-func saveColor(on bool) {
+// saveColor saves the color preference to the cache file.
+// Returns an error if the cache directory cannot be created or the file cannot be written.
+func saveColor(on bool) error {
 	path := colorCachePath()
 	if path == "" {
-		return
+		return nil
 	}
-	os.MkdirAll(filepath.Dir(path), 0755)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
 	val := "false"
 	if on {
 		val = "true"
 	}
-	os.WriteFile(path, []byte(val), 0644)
+	return os.WriteFile(path, []byte(val), 0644)
 }
 
+// themeCachePath returns the path to the theme preference cache file.
 func themeCachePath() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -1545,6 +1702,8 @@ func themeCachePath() string {
 	return filepath.Join(cacheDir, "everything", "theme")
 }
 
+// loadSavedTheme loads the saved theme preference from the cache file.
+// Returns an empty string if the file doesn't exist or cannot be read.
 func loadSavedTheme() string {
 	data, err := os.ReadFile(themeCachePath())
 	if err != nil {
@@ -1553,11 +1712,15 @@ func loadSavedTheme() string {
 	return strings.TrimSpace(string(data))
 }
 
-func saveTheme(name string) {
+// saveTheme saves the theme preference to the cache file.
+// Returns an error if the cache directory cannot be created or the file cannot be written.
+func saveTheme(name string) error {
 	path := themeCachePath()
 	if path == "" {
-		return
+		return nil
 	}
-	os.MkdirAll(filepath.Dir(path), 0755)
-	os.WriteFile(path, []byte(name), 0644)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(name), 0644)
 }

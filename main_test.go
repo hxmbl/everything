@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -167,7 +168,9 @@ func TestWriteJSONLineValid(t *testing.T) {
 	content := "line1\nline2 \"quoted\"\ttab"
 	head := []byte(content[:3])
 	rest := strings.NewReader(content[3:])
-	writeJSONLine(&buf, "some/path.txt", head, rest)
+	if err := writeJSONLine(&buf, "some/path.txt", head, rest); err != nil {
+		t.Fatalf("writeJSONLine failed: %v", err)
+	}
 
 	line := buf.String()
 	if !strings.HasPrefix(line, `{"path":"some/path.txt","content":"`) {
@@ -186,7 +189,9 @@ func TestWriteJSONRecordNoTrailingNewline(t *testing.T) {
 	content := "a\nbb \"q\" cc"
 	head := []byte(content[:4])
 	rest := strings.NewReader(content[4:])
-	writeJSONRecord(&buf, "x/y.txt", head, rest)
+	if err := writeJSONRecord(&buf, "x/y.txt", head, rest); err != nil {
+		t.Fatalf("writeJSONRecord failed: %v", err)
+	}
 
 	got := buf.String()
 	want := `{"path":"x/y.txt","content":"a\nbb \"q\" cc"}`
@@ -278,5 +283,143 @@ func TestIsBinary(t *testing.T) {
 	}
 	if isBinary([]byte{}) {
 		t.Error("empty flagged as binary")
+	}
+	// Test magic bytes
+	if !isBinary([]byte{'P', 'K', 0x03, 0x04}) { // ZIP
+		t.Error("ZIP not flagged")
+	}
+	if !isBinary([]byte{0x89, 'P', 'N', 'G'}) { // PNG
+		t.Error("PNG not flagged")
+	}
+	// Test control character density
+	controlHeavy := make([]byte, 100)
+	for i := range controlHeavy {
+		controlHeavy[i] = 0x01
+	}
+	if !isBinary(controlHeavy) {
+		t.Error("control-heavy data not flagged")
+	}
+}
+
+func TestReadWholeFile(t *testing.T) {
+	// Test normal read - head is provided externally, file is at position after head
+	f, err := os.CreateTemp("", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+
+	content := "hello world"
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read the head first (simulating the peek)
+	head := make([]byte, 3)
+	n, err := f.Read(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head = head[:n]
+
+	// Now read the rest using readWholeFile (file position is after head)
+	data, err := readWholeFile(head, f)
+	if err != nil {
+		t.Errorf("readWholeFile failed: %v", err)
+	}
+	if string(data) != content {
+		t.Errorf("got %q, want %q", string(data), content)
+	}
+
+	// Test error case - unreadable file
+	badFile, err := os.CreateTemp("", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(badFile.Name())
+	badFile.Close()
+
+	// Try to read from closed file
+	_, err = readWholeFile([]byte("x"), badFile)
+	if err == nil {
+		t.Error("expected error for closed file")
+	}
+}
+
+func TestParseSizeEdgeCases(t *testing.T) {
+	cases := []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"0", 0, false},
+		{"0B", 0, false},
+		{"1", 1, false},
+		{"1023", 1023, false},
+		{"  1024  ", 1024, false},
+		{"-1", 0, true},
+		{"1.5MB", 0, true},
+		{"", 0, true},
+		{"  ", 0, true},
+	}
+	for _, c := range cases {
+		got, err := parseSize(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("parseSize(%q) expected error, got %d", c.in, got)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("parseSize(%q) unexpected error: %v", c.in, err)
+			}
+			if got != c.want {
+				t.Errorf("parseSize(%q) = %d, want %d", c.in, got, c.want)
+			}
+		}
+	}
+}
+
+func TestHasMagic(t *testing.T) {
+	// Test exact match
+	if !hasMagic([]byte{'P', 'K', 0x03, 0x04, 0x05}, []byte{'P', 'K', 0x03, 0x04}) {
+		t.Error("exact magic match failed")
+	}
+	// Test too short
+	if hasMagic([]byte{'P', 'K'}, []byte{'P', 'K', 0x03, 0x04}) {
+		t.Error("should fail on too short data")
+	}
+	// Test mismatch
+	if hasMagic([]byte{'P', 'K', 0x03, 0x05}, []byte{'P', 'K', 0x03, 0x04}) {
+		t.Error("should fail on mismatch")
+	}
+}
+
+func TestValidateConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     *Config
+		wantErr bool
+	}{
+		{"valid config", &Config{}, false},
+		{"json and jsonl conflict", &Config{JSON: true, JSONL: true}, true},
+		{"negative max size", &Config{MaxSize: -1}, true},
+		{"runs too high", &Config{Runs: 10001}, true},
+		{"runs negative", &Config{Runs: -1}, true},
+		{"warmup too high", &Config{Warmup: 10001}, true},
+		{"warmup negative", &Config{Warmup: -1}, true},
+		{"valid bounds", &Config{Runs: 5, Warmup: 2, MaxSize: 1000}, false},
+	}
+	for _, c := range cases {
+		err := validateConfig(c.cfg)
+		if c.wantErr && err == nil {
+			t.Errorf("%s: expected error, got nil", c.name)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("%s: unexpected error: %v", c.name, err)
+		}
 	}
 }
