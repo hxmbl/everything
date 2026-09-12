@@ -92,9 +92,9 @@ func isInteractive() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-const treeIgnorePattern = ".git|target|node_modules|.venv|venv|__pycache__|" +
-	"*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*.jceks|*.kdbx|" +
-	"credentials*|client_secret*|client-secret*|*service-account*|secrets.*|" +
+const treeIgnorePattern = ".git|target|build|dist|out|bin|vendor|coverage|.next|.nuxt|.cache|temp|tmp|logs|node_modules|.venv|venv|__pycache__|" +
+	"*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*.jceks|*.kdbx|*.crt|*.cer|*.der|*.csr|*.asc|*.gpg|*.pgp|" +
+	"credentials*|client_secret*|client-secret*|*service-account*|secrets.*|secret*|auth*|token*|password*|api_key*|private*|aws*|" +
 	"*.env|id_rsa*|id_ed25519*|id_ecdsa*|id_dsa*"
 
 func filterTreeLine(line string) bool {
@@ -1092,14 +1092,17 @@ Other:
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 
-Always skipped: .git, target/, .DS_Store, ._*, symlinks (unless
---follow-symlinks), pipes/devices/sockets, binaries (unless
---include-binaries), and secret-looking files: .env*, *.env, id_rsa*/
-id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
-*.keystore, *.kdbx, credentials*, client_secret*, *service-account*.json,
-secrets.*, .netrc, .htpasswd, .npmrc, .pypirc, .git-credentials, plus any
-file whose content contains a PEM private key block. Skipped files are
-listed with --omitted-disclaimer — check it before sharing a dump.
+Always skipped: .git, target/, build/, dist/, out/, bin/, vendor/, coverage/,
+.next/, .nuxt/, .cache/, temp/, tmp/, logs/, .DS_Store, ._*, .vscode/, .idea/,
+.eclipse/, .settings/, symlinks (unless --follow-symlinks), pipes/devices/sockets,
+binaries (unless --include-binaries), and secret-looking files: .env*, *.env,
+id_rsa*/id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
+*.keystore, *.kdbx, *.crt, *.cer, *.der, *.csr, *.asc, *.gpg, *.pgp,
+credentials*, client_secret*, *service-account*.json, secrets.*, secret*,
+auth*, token*, password*, api_key*, private*, aws*, .netrc, .htpasswd,
+.npmrc, .pypirc, .git-credentials, plus any file whose content contains a
+PEM private key block. Skipped files are listed with --omitted-disclaimer —
+check it before sharing a dump.
 
 Examples:
   everything --output snapshot.txt                recommended starting point
@@ -1252,6 +1255,18 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
+	// Common build and output directories
+	switch base {
+	case "build", "dist", "out", "bin", "vendor", "coverage", ".next", ".nuxt", ".cache", "temp", "tmp", "logs":
+		return true
+	}
+
+	// IDE directories
+	switch base {
+	case ".vscode", ".idea", ".eclipse", ".settings":
+		return true
+	}
+
 	if cfg.IgnoreVenv {
 		switch base {
 		case ".venv", "venv", "__pycache__", "node_modules":
@@ -1282,7 +1297,8 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 
 var secretExtensions = map[string]bool{
 	".pem": true, ".key": true, ".p12": true, ".pfx": true, ".jks": true,
-	".keystore": true, ".jceks": true, ".kdbx": true,
+	".keystore": true, ".jceks": true, ".kdbx": true, ".crt": true, ".cer": true,
+	".der": true, ".csr": true, ".asc": true, ".gpg": true, ".pgp": true,
 }
 
 var secretDataExts = map[string]bool{
@@ -1334,6 +1350,18 @@ func isSecretFilename(name string) bool {
 		if lower == "secrets" || secretDataExts[filepath.Ext(lower)] {
 			return true
 		}
+	}
+
+	// Additional secret file patterns
+	if strings.HasPrefix(lower, "secret") || strings.HasPrefix(lower, "auth") ||
+		strings.HasPrefix(lower, "token") || strings.HasPrefix(lower, "password") ||
+		strings.HasPrefix(lower, "api_key") || strings.HasPrefix(lower, "api-key") ||
+		strings.HasPrefix(lower, "private") || strings.HasPrefix(lower, "aws") {
+		return true
+	}
+	if strings.Contains(lower, "config") && (strings.Contains(lower, "secret") ||
+		strings.Contains(lower, "credential") || strings.Contains(lower, "auth")) {
+		return true
 	}
 
 	ext := filepath.Ext(lower)
