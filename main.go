@@ -1485,6 +1485,53 @@ var secretDataExts = map[string]bool{
 	".conf": true, ".cfg": true, ".txt": true, ".properties": true,
 }
 
+// sourceCodeExts are extensions of hand-written program text, and they are the
+// only thing that excuses a file from the bare secret-word rule below. Those
+// words name source files all day -- auth.go, authorization.go, tokenizer.go,
+// private.go, aws-sdk.js -- and dropping one deletes the user's own code from
+// the dump, which is the single thing this tool exists to avoid.
+//
+// The exemption is enumerated rather than inferred, so that an extension nobody
+// listed keeps the strict reading: this list can only shrink the set of skipped
+// files, never grow it. The omissions are deliberate. .md, .txt, .rst and .adoc
+// are where a password or token gets pasted into prose; .sql, .sh, .html and
+// .config can carry live credentials; the structured data formats are already
+// secretDataExts. Those stay subject to the strict rule, as does anything with
+// no extension at all. A new language belongs here when it starts hiding
+// behind a secret word.
+var sourceCodeExts = map[string]bool{
+	// C family
+	".c": true, ".h": true, ".cc": true, ".cpp": true, ".cxx": true,
+	".hh": true, ".hpp": true, ".hxx": true, ".m": true, ".mm": true,
+
+	// Other compiled languages
+	".go": true, ".rs": true, ".swift": true, ".zig": true, ".nim": true,
+	".d": true, ".cr": true, ".vala": true, ".sol": true, ".v": true,
+	".sv": true, ".s": true, ".asm": true, ".f90": true,
+
+	// JVM and .NET
+	".java": true, ".kt": true, ".kts": true, ".scala": true, ".groovy": true,
+	".clj": true, ".cljs": true, ".cljc": true, ".cs": true, ".fs": true,
+	".fsx": true, ".fsi": true, ".vb": true,
+
+	// Scripted and dynamic
+	".py": true, ".pyi": true, ".rb": true, ".rake": true, ".pl": true,
+	".pm": true, ".php": true, ".lua": true, ".tcl": true, ".r": true,
+	".jl": true, ".dart": true, ".ex": true, ".exs": true, ".erl": true,
+	".hrl": true, ".el": true, ".lisp": true, ".elm": true,
+
+	// Functional and academic
+	".hs": true, ".lhs": true, ".ml": true, ".mli": true, ".pas": true,
+	".ada": true, ".adb": true, ".ads": true,
+
+	// Browser and frontend code. A component called Auth.vue is code; a token
+	// pasted into one is the failure mode every .env file already gets caught
+	// for.
+	".js": true, ".mjs": true, ".cjs": true, ".jsx": true, ".ts": true,
+	".tsx": true, ".mts": true, ".cts": true, ".vue": true, ".svelte": true,
+	".astro": true, ".proto": true, ".graphql": true, ".gql": true,
+}
+
 var binaryMagics = [][]byte{
 	{0x7f, 'E', 'L', 'F'},
 	{'M', 'Z'},
@@ -1531,11 +1578,17 @@ func isSecretFilename(name string) bool {
 		}
 	}
 
-	// Additional secret file patterns
-	if strings.HasPrefix(lower, "secret") || strings.HasPrefix(lower, "auth") ||
-		strings.HasPrefix(lower, "token") || strings.HasPrefix(lower, "password") ||
-		strings.HasPrefix(lower, "api_key") || strings.HasPrefix(lower, "api-key") ||
-		strings.HasPrefix(lower, "private") || strings.HasPrefix(lower, "aws") {
+	ext := filepath.Ext(lower)
+
+	// Additional secret file patterns. The words are not evidence on their own:
+	// auth.go and tokenizer.go are code, so the rule stands down for any
+	// extension known to be source. See sourceCodeExts for why the exemption is
+	// an explicit list rather than a guess about unknown extensions.
+	if !sourceCodeExts[ext] &&
+		(strings.HasPrefix(lower, "secret") || strings.HasPrefix(lower, "auth") ||
+			strings.HasPrefix(lower, "token") || strings.HasPrefix(lower, "password") ||
+			strings.HasPrefix(lower, "api_key") || strings.HasPrefix(lower, "api-key") ||
+			strings.HasPrefix(lower, "private") || strings.HasPrefix(lower, "aws")) {
 		return true
 	}
 	if strings.Contains(lower, "config") && (strings.Contains(lower, "secret") ||
@@ -1543,7 +1596,6 @@ func isSecretFilename(name string) bool {
 		return true
 	}
 
-	ext := filepath.Ext(lower)
 	if secretExtensions[ext] {
 		return true
 	}
