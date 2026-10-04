@@ -12,7 +12,7 @@ import (
 
 // version is overridden at release time by goreleaser via
 // -X main.version={{.Version}}, so the identifier and package must not move.
-var version = "v1.10.0"
+var version = "v1.10.1"
 
 // main is the entry point for the everything tool.
 // It parses arguments, configures output, and runs the directory traversal.
