@@ -67,6 +67,7 @@ everything --color | less -R
 | -------------------------- | ------------------------------------------------------------ | -------------------------------------- |
 | `--output <path>`          | Write to file (auto-excludes itself, refuses clobber/symlinks) | `everything --output out.txt`    |
 | `--exclude <list>`         | Comma-separated names/paths to skip (exact match, no globs)  | `--exclude "vendor,secrets.txt"`       | 
+| `--include <list>`         | Comma-separated names to keep even if a default skips them   | `--include "*.go,Makefile"`           |
 | `--max-size <n>`           | Skip files larger than this (B, KB, MB, GB, TB)              | `--max-size 1MB` or `--max-size 500KB` |
 | `--include-binaries`       | Include binary files (skipped by default)                    | `--include-binaries`                   |
 | `--force`                  | Overwrite existing output file (with `--output` only)        | `--force`                               |
@@ -77,14 +78,19 @@ everything --color | less -R
 | `--include-venv`           | Include venv directories (skipped by default)                | `--include-venv`                       |
 | `--json`                   | Output JSON array of `{"path","content"}` objects             | `everything --json --output out.json` |
 | `--jsonl`                  | Output JSON Lines (one object per line)                      | `everything --jsonl --output out.jsonl` |
-| `--no-omitted-disclaimer`  | Don't list skipped files on stderr at end of scan (default)  | `everything --no-omitted-disclaimer`   |
+| `--no-omitted-disclaimer`  | Stop listing skipped files on stderr (the listing is on by default) | `everything --no-omitted-disclaimer`   |
 | `--follow-symlinks`        | Read file symlinks (skipped by default)                      | `--follow-symlinks`                    |
-| `--stdout-safe`            | Refuse to dump to interactive terminal without `--output`    | `--stdout-safe`                        |
+| `--stdout-safe`            | Refuse to dump to an interactive terminal; `--force` does not override it | `--stdout-safe`             |
 | `--benchmark`              | Time traversal instead of writing snapshot                    | `everything --benchmark`               |
-| `--runs <n>`               | With `--benchmark`, repeat traversal n times                 | `everything --benchmark --runs 5`     |
+| `--runs <n>`               | With `--benchmark`, repeat traversal n times (default: 1)    | `everything --benchmark --runs 5`     |
 | `--warmup <n>`             | With `--benchmark`, untimed warmup passes (default: 1)       | `everything --benchmark --warmup 0`   |
 | `--version`, `-v`          | Print version and exit                                       | `everything -v`                        |
 | `--help`, `-h`             | Print help and exit                                          | `everything --help`                    |
+
+**Aliases**: `--ignore` = `--exclude`, `--highlight` = `--color`, `--overwrite` = `--force`,
+`--bench` = `--benchmark`, `--include-binary` = `--include-binaries`. `--ignore-venv` restores
+the default of skipping venv directories. `--omitted-disclaimer` is a deprecated no-op kept for
+existing scripts, since the listing is now the default.
 
 **Positional arguments**: Directories become scan roots (default: `.`), other arguments become output path (only if doesn't exist). Use `--output <path> --force` to overwrite.
 
@@ -151,7 +157,17 @@ everything --benchmark --runs 5
 - Pipes, devices, and sockets (prevents hanging)
 - Binary files (unless `--include-binaries`)
 - Venv/generated dirs: `.venv`, `venv`, `__pycache__`, `node_modules`
-- Secret-looking files: `.env*`, `*.env`, `id_rsa*`, `id_ed25519*`, `id_dsa*`, `id_ecdsa*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `credentials*`, `client_secret*`, `*service-account*.json`, `secrets.*`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`, `.git-credentials`
+- Secret-looking files: `.env*`, `*.env`, `id_rsa*`, `id_ed25519*`, `id_dsa*`, `id_ecdsa*`,
+  `credentials*`, `client_secret*`, `client-secret*`, `*service-account*.json`,
+  `*service_account*.json`, `secrets.*`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`,
+  `.git-credentials`, and the extensions `.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`,
+  `.jceks`, `.kdbx`, `.crt`, `.cer`, `.der`, `.csr`, `.asc`, `.gpg`, `.pgp`
+- Names starting with `secret`, `auth`, `token`, `password`, `api_key`, `api-key`, `private`
+  or `aws`, and any name containing `config` together with `secret`, `credential` or `auth`.
+  This rule stands down for extensions that are hand-written source (`.go`, `.py`, `.ts`, …),
+  so `auth.go` and `tokenizer.go` are kept. It does **not** stand down for prose: `.md`,
+  `.txt`, `.rst`, `.adoc`, `.sql`, `.sh`, `.html` and `.config` are all still subject to it,
+  because that is where a pasted password lives. A file with no extension is subject to it too.
 - Files whose first 4KB contains a PEM private key block (`-----BEGIN ... PRIVATE KEY`)
 
 Skipped files are listed on stderr after every run — check that list before

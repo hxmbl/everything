@@ -19,8 +19,10 @@ import (
 //
 // defaultIgnoreDirs is the single source of truth for directory names that are
 // generated, cached, vendored, or otherwise not hand-written. It is consulted
-// by shouldSkip and, through treeIgnoreDirsPattern, by the `tree` renderer, so
-// the two cannot drift apart the way a hand-copied regex did.
+// by shouldSkip and, through treeIgnorePattern, by the `tree` renderer, so the
+// two share one list rather than a hand-copied regex. They still disagree
+// under --include, which lifts a default for the walker but not for the
+// banner; see treeIgnorePattern.
 //
 // Every entry is matched against a single path component (the directory's own
 // name), never a substring, so "bin" does not swallow "combine.go".
@@ -119,15 +121,20 @@ var treeSecretPatterns = []string{
 }
 
 // treeIgnorePattern renders every ignore list into the single alternation that
-// `tree -I` expects. Deriving it here is the point: the renderer and the walker
-// now read the same lists, so a directory skipped by shouldSkip cannot be
-// missing from the rendered tree.
+// `tree -I` expects. Deriving it here means the banner and the walker read one
+// list instead of a hand-copied regex.
 //
-// One pattern has to serve two matchers, which differ in syntax. `tree -I`
+// The two are not fully equivalent. shouldSkip consults cfg: --include lifts a
+// default directory, and it also drops the output file and the running binary
+// by absolute path. treeIgnorePattern sees neither, so under --include the
+// banner can omit a directory the dump includes. filterTreeLine re-applies
+// isSecretFilename per line, which catches most of the remaining drift, but a
+// lifted directory is still missing from the banner.
+//
+// One pattern also has to serve two matchers, which differ in syntax. `tree -I`
 // applies fnmatch-style globs to each path component, while Go's regexp wants
-// `.pem` rather than a leading `*.pem`. Keeping the globs here and stripping
-// the leading star for the Go-side assertions keeps both honest; see
-// treeIgnorePatternRe.
+// `.pem` rather than a leading `*.pem`. treeIgnorePatternRe is the Go-side
+// rewrite; it exists only for the tests and ships unused.
 var treeIgnorePattern = strings.Join(append(
 	append(append([]string{}, defaultIgnoreDirs...), venvIgnoreDirs...),
 	append(append([]string{}, defaultIgnoreFiles...), treeSecretPatterns...)...,

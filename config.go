@@ -42,9 +42,11 @@ type Config struct {
 
 // maxStoredSkips caps how many skip messages are kept in memory for the
 // omitted-file disclaimer. The disclaimer is on by default, so an unbounded
-// list would tax every run; the worst case is a broken pipe, where every
-// remaining file records a write error. The skippedTotal counter is never
-// capped, so the summary can still report the true number of omitted files.
+// list would tax every run; the worst case is a full disk, where every
+// remaining file records a write error. A broken pipe is not that case: on
+// Unix the runtime kills the process with SIGPIPE on EPIPE to stdout, so no
+// write error is ever recorded. The skippedTotal counter is never capped, so
+// the summary can still report the true number of omitted files.
 const maxStoredSkips = 1000
 
 // recordSkip records a skip message if OmittedDisclaimer is enabled.

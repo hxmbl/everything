@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -384,22 +385,6 @@ Other:
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 
-Always skipped: .git, target/, build/, dist/, out/, bin/, vendor/, _build/,
-.next/, .nuxt/, .svelte-kit/, .astro/, .cache/, .turbo/, .gradle/, .build/,
-DerivedData/, Pods/, .tox/, .pytest_cache/, .mypy_cache/, .ruff_cache/,
-htmlcov/, .nyc_output/, .terraform/, elm-stuff/, .dart_tool/, .stack-work/,
-temp/, tmp/, logs/, .DS_Store, ._*, .vscode/, .idea/, .eclipse/, .settings/,
-minified bundles (*.min.js, *.min.css), source maps (*.map), coverage reports,
-*.log, symlinks (unless --follow-symlinks), pipes/devices/sockets,
-binaries (unless --include-binaries), and secret-looking files: .env*, *.env,
-id_rsa*/id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
-*.keystore, *.kdbx, *.crt, *.cer, *.der, *.csr, *.asc, *.gpg, *.pgp,
-credentials*, client_secret*, *service-account*.json, secrets.*, secret*,
-auth*, token*, password*, api_key*, private*, aws*, .netrc, .htpasswd,
-.npmrc, .pypirc, .git-credentials, plus any file whose content contains a
-PEM private key block. Skipped files are listed on stderr after the scan —
-check that list before sharing; use --no-omitted-disclaimer to silence it.
-
 Examples:
   everything --output snapshot.txt                recommended starting point
   everything --color --output out.txt             syntax highlighted file
@@ -411,6 +396,41 @@ Examples:
   everything --color | less -R                    paged, highlighted viewing
   everything | grep "TODO"                        search the whole project
   everything --output ctx.txt                     see what got left out`)
+	fmt.Println()
+	printSkipHelp()
+}
+
+// printSkipHelp prints the skip rules, generated from the lists themselves so
+// the help text cannot drift from what the tool actually does. Anything skipped
+// is listed on stderr after the scan; --no-omitted-disclaimer silences it.
+func printSkipHelp() {
+	fmt.Println("Skipped by default:")
+	fmt.Println("  dirs    ", strings.Join(defaultIgnoreDirs, " "))
+	fmt.Println("  files   ", strings.Join(defaultIgnoreFiles, " "))
+	fmt.Println("  also   .DS_Store, ._*")
+	fmt.Println("  venv    ", strings.Join(venvIgnoreDirs, " "), "(undo with --include-venv)")
+	fmt.Println("  exts   ", joinSorted(secretExtensions))
+	fmt.Println("  names  .env*, *.env, id_rsa*, id_ed25519*, id_dsa*, id_ecdsa*,")
+	fmt.Println("         credentials*, client_secret*, client-secret*,")
+	fmt.Println("         *service-account*.json, *service_account*.json, secrets.*,")
+	fmt.Println("         .netrc, .htpasswd, .npmrc, .pypirc, .git-credentials")
+	fmt.Println("  words  names starting secret, auth, token, password, api_key,")
+	fmt.Println("         api-key, private or aws, and any name with config plus")
+	fmt.Println("         secret/credential/auth -- stood down for source extensions,")
+	fmt.Println("         so auth.go is kept but auth.md is not")
+	fmt.Println("  content  a PEM private key block in the first 4KB")
+	fmt.Println("  too      symlinks (unless --follow-symlinks), pipes, devices,")
+	fmt.Println("           sockets, and binaries (unless --include-binaries)")
+}
+
+// joinSorted renders a set as space-separated keys in a stable order.
+func joinSorted(set map[string]bool) string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, " ")
 }
 
 // parseSize parses a human-readable size string (e.g., "1MB", "500KB") into bytes.
