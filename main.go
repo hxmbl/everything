@@ -65,6 +65,7 @@ type Config struct {
 	FollowSymlinks    bool
 	JSON              bool
 	JSONL             bool
+	jsonExplicit      bool
 	OmittedDisclaimer bool
 	SkippedFiles      []string
 	skippedTotal      int
@@ -907,7 +908,10 @@ func processFile(path string, info os.FileInfo, writer io.Writer, cfg *Config, j
 // validateConfig performs final validation on the parsed configuration.
 // It checks for conflicting options and invalid combinations.
 func validateConfig(cfg *Config) error {
-	if cfg.JSON && cfg.JSONL {
+	// JSONL is a mode inside JSON mode, so --jsonl sets JSON as well and
+	// JSON&&JSONL cannot tell the two flags apart. Only an explicitly typed
+	// --json conflicts with --jsonl; on its own --jsonl is the common case.
+	if cfg.jsonExplicit && cfg.JSONL {
 		return fmt.Errorf("--json and --jsonl are mutually exclusive")
 	}
 	if cfg.MaxSize < 0 {
@@ -1061,6 +1065,7 @@ func parseArgsFrom(args []string) *Config {
 
 		case "--json":
 			cfg.JSON = true
+			cfg.jsonExplicit = true
 
 		case "--jsonl":
 			cfg.JSON = true
