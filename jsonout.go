@@ -16,6 +16,7 @@ const hexDigits = "0123456789abcdef"
 // It ensures that multi-byte UTF-8 sequences are not split across escape boundaries.
 type jsonEscaper struct {
 	dst      io.Writer
+	buf      []byte // pooled scratch; escapes are staged here, not written one by one
 	pending  [utf8.UTFMax]byte
 	nPending int
 	err      error
@@ -43,11 +44,40 @@ func (e *jsonEscaper) writeByteEscape(b byte) {
 	e.emitRaw(esc[:])
 }
 
+// emitRaw stages p in the scratch buffer instead of writing it straight through:
+// one dst.Write per escape is one write(2) per escape when dst is os.Stdout.
+// A chunk larger than the buffer still goes direct, and any leftover staged
+// bytes are flushed here so they stay ahead of the next escape.
 func (e *jsonEscaper) emitRaw(p []byte) {
 	if e.err != nil || len(p) == 0 {
 		return
 	}
-	_, e.err = e.dst.Write(p)
+	if e.buf == nil {
+		e.buf = (*lineBufPool.Get().(*[]byte))[:0]
+	}
+	if len(p) > cap(e.buf) {
+		e.flush()
+		if e.err == nil {
+			_, e.err = e.dst.Write(p)
+		}
+		return
+	}
+	if len(e.buf)+len(p) > cap(e.buf) {
+		e.flush()
+		if e.err != nil {
+			return
+		}
+	}
+	e.buf = append(e.buf, p...)
+}
+
+// flush hands the staged bytes to the destination. The first error wins and
+// sticks, as it does for a direct write.
+func (e *jsonEscaper) flush() {
+	if e.err == nil && len(e.buf) > 0 {
+		_, e.err = e.dst.Write(e.buf)
+	}
+	e.buf = e.buf[:0]
 }
 
 func (e *jsonEscaper) Write(p []byte) (int, error) {
@@ -151,6 +181,11 @@ func (e *jsonEscaper) Close() error {
 	if e.nPending > 0 {
 		e.nPending = 0
 		e.emitRaw([]byte(`\ufffd`))
+	}
+	e.flush()
+	if e.buf != nil {
+		lineBufPool.Put(&e.buf)
+		e.buf = nil
 	}
 	return e.err
 }

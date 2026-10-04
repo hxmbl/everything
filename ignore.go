@@ -4,7 +4,7 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -158,8 +158,81 @@ func filterTreeLine(line string) bool {
 	return isSecretFilename(name)
 }
 
+// treeLineIsSecret reports whether one line of `tree` output has to be dropped
+// from the banner. Blank lines and the trailing size report are never secrets,
+// whatever they contain: a secret file still has to be counted, and a line that
+// merely mentions " directories, " is not a name.
+func treeLineIsSecret(line string) bool {
+	if strings.TrimSpace(line) == "" ||
+		strings.HasPrefix(line, "0 directories") ||
+		strings.Contains(line, " directories, ") ||
+		strings.HasSuffix(line, " files") {
+		return false
+	}
+	return filterTreeLine(line)
+}
+
+// treeStreamBufferSize is how much of tree's output is held while streaming
+// it. It bounds the reader, not the output: bufio.Reader has no line-length
+// cap, so a pathologically long line is written out in full rather than
+// silently truncated the way bufio.Scanner's 64 KiB token limit would.
+const treeStreamBufferSize = 64 * 1024
+
+// streamTreeOutput copies tree's stdout into writer one line at a time, dropping
+// the lines that name secrets, and reports whether tree produced any output at
+// all.
+//
+// The bytes written are exactly what buffering the whole output and splitting
+// it produced: one trailing newline trimmed, every surviving line
+// re-terminated, then one blank line closing the banner. That includes the
+// degenerate case of no output at all, which the buffered form turned into a
+// single empty line. Nothing is accumulated, so peak memory is one line plus
+// one buffer however big the tree is.
+//
+// It always reads r to EOF, even after a write to writer fails. Returning early
+// would leave tree blocked on a full pipe, and the following Wait would never
+// return.
+func streamTreeOutput(writer io.Writer, r io.Reader) (produced bool) {
+	br := bufio.NewReaderSize(r, treeStreamBufferSize)
+
+	writeFailed := false
+	emit := func(line string) {
+		if writeFailed {
+			return
+		}
+		if _, err := fmt.Fprintln(writer, line); err != nil {
+			writeFailed = true
+		}
+	}
+
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 {
+			produced = true
+			line = strings.TrimSuffix(line, "\n")
+			if !treeLineIsSecret(line) {
+				emit(line)
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	if !produced {
+		emit("") // "" trimmed is "", which split into one empty line
+	}
+	emit("") // the blank line that closes the banner
+
+	return produced
+}
+
 // tryPrintTree attempts to print a directory tree using the 'tree' command if available.
 // It filters out secret files and directories from the output.
+//
+// tree's output is streamed through a pipe instead of being collected in a
+// buffer: on a large tree that buffer, and the []string it was split into, were
+// the only unbounded allocation in the tool, and they existed only to decorate
+// the dump with a directory banner.
 func tryPrintTree(writer io.Writer, roots []string) {
 	bin, err := exec.LookPath("tree")
 	if err != nil {
@@ -167,27 +240,33 @@ func tryPrintTree(writer io.Writer, roots []string) {
 	}
 
 	for _, root := range roots {
-		var filtered bytes.Buffer
+		pr, pw, pipeErr := os.Pipe()
+		if pipeErr != nil {
+			return
+		}
+
 		cmd := exec.Command(bin, "-n", "-I", treeIgnorePattern, root)
-		cmd.Stdout = &filtered
+		cmd.Stdout = pw
 		cmd.Stderr = nil
 
-		runErr := cmd.Run()
+		startErr := cmd.Start()
 
-		for _, line := range strings.Split(strings.TrimSuffix(filtered.String(), "\n"), "\n") {
-			if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "0 directories") ||
-				strings.Contains(line, " directories, ") || strings.HasSuffix(line, " files") {
-				fmt.Fprintln(writer, line)
-				continue
-			}
-			if filterTreeLine(line) {
-				continue
-			}
-			fmt.Fprintln(writer, line)
+		// The write end has to go before the read below, and it is safe to
+		// close it in either case: on success the child already holds its own
+		// descriptor, and on a start failure this is the last one. Leaving it
+		// open would mean no read on pr ever returns EOF, because a pipe
+		// reports end of file only once every write end is closed.
+		pw.Close()
+
+		produced := streamTreeOutput(writer, pr)
+		pr.Close()
+
+		runErr := startErr
+		if runErr == nil {
+			runErr = cmd.Wait()
 		}
-		fmt.Fprint(writer, "\n")
 
-		if runErr != nil && filtered.Len() == 0 {
+		if runErr != nil && !produced {
 			return
 		}
 	}

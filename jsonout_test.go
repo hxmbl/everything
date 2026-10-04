@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -138,5 +139,102 @@ func TestJSONEscaperEmptyWrite(t *testing.T) {
 	e.Close()
 	if buf.String() != "é" {
 		t.Fatalf("empty write corrupted pending: %q", buf.String())
+	}
+}
+
+// countingWriter counts Write calls and keeps the bytes.
+type countingWriter struct {
+	writes int
+	bytes  int64
+	buf    bytes.Buffer
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	c.writes++
+	c.bytes += int64(len(p))
+	return c.buf.Write(p)
+}
+
+// TestJSONEscaperBatchesWrites is the regression test for the per-escape write:
+// when the destination is os.Stdout, an unbuffered escaper turns every \n, \"
+// and \u00XX into its own write(2), which is what made `everything --jsonl .`
+// take minutes on a source tree while `--output` took seconds.
+func TestJSONEscaperBatchesWrites(t *testing.T) {
+	var payload bytes.Buffer
+	for payload.Len() < 1<<20 {
+		payload.WriteString("func café(path string) string {\n\treturn \"a\\tb\" + `x`\n}\n")
+	}
+	body := payload.Bytes()
+
+	cw := &countingWriter{}
+	head := body[:8192] // writeJSONRecord peeks, then streams the rest
+	if err := writeJSONLine(cw, "src/café.go", head, bytes.NewReader(body[8192:])); err != nil {
+		t.Fatalf("writeJSONLine failed: %v", err)
+	}
+
+	// Writes must be bounded by buffer fills plus the record's framing writes,
+	// not by the number of escapes. Two staged flushes per fill leaves room for
+	// the partial fill each chunk inherits from the one before it.
+	const bufferSize = 64 * 1024
+	const framingWrites = 6 // the literals writeJSONRecord writes around the content
+	maxWrites := 2*int(cw.bytes/bufferSize) + framingWrites
+	if cw.writes > maxWrites {
+		t.Errorf("%d writes for %d escaped bytes: escapes are not batched, want <= %d",
+			cw.writes, cw.bytes, maxWrites)
+	}
+	t.Logf("%d bytes in, %d escaped bytes out, %d writes (bound %d)",
+		len(body), cw.bytes, cw.writes, maxWrites)
+
+	// Batching must not disturb the record itself.
+	out := cw.buf.String()
+	if !strings.HasPrefix(out, `{"path":"src/café.go","content":"`) || !strings.HasSuffix(out, "}\n") {
+		t.Errorf("record framing damaged: %.60q ... %.20q", out, out[len(out)-20:])
+	}
+}
+
+// failWriter fails every write and counts the attempts.
+type failWriter struct {
+	attempts int
+	err      error
+}
+
+func (f *failWriter) Write(p []byte) (int, error) {
+	f.attempts++
+	return 0, f.err
+}
+
+func TestJSONEscaperStickyWriteError(t *testing.T) {
+	fw := &failWriter{err: errors.New("boom")}
+	e := &jsonEscaper{dst: fw}
+	payload := bytes.Repeat([]byte("a\nb\"c"), 40000) // well over one buffer
+	if _, err := e.Write(payload); err == nil {
+		t.Error("Write returned no error after the destination failed")
+	}
+	if _, err := e.Write(payload); err == nil {
+		t.Error("second Write lost the sticky error")
+	}
+	if err := e.Close(); err == nil {
+		t.Error("Close returned no error")
+	}
+	if fw.attempts != 1 {
+		t.Errorf("destination saw %d writes, want exactly 1: writes did not stop after the first error", fw.attempts)
+	}
+}
+
+func TestJSONEscaperBufferBoundaryRune(t *testing.T) {
+	// A rune straddling the scratch buffer's boundary must land whole, exactly
+	// as it did when every escape went straight to the destination.
+	filler := bytes.Repeat([]byte("a"), 64*1024-2)
+	for _, tc := range []struct{ tail, want string }{
+		{"\xc3\xa9\n", "é" + `\n`},
+		{"\xe2\x82\xac\n", "€" + `\n`},
+		{"\xf0\x9f\x98\x80\n", "\U0001f600" + `\n`},
+	} {
+		var buf bytes.Buffer
+		writeJSONString(&buf, append(filler, tc.tail...))
+		if want := string(filler) + tc.want; buf.String() != want {
+			t.Errorf("boundary-split rune corrupted (%d bytes out): %q...%q",
+				buf.Len(), buf.String()[len(filler)-4:len(filler)+8], buf.String()[buf.Len()-8:])
+		}
 	}
 }

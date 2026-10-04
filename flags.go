@@ -328,7 +328,8 @@ Output:
                         symlinks are refused outright.
   --force, --overwrite  Allow overwriting an existing output file.
   --stdout-safe         Refuse to dump to an interactive terminal unless
-                        --output is given.
+                        --output is given. --force does not override this;
+                        redirect or pipe the dump instead.
   --json                Emit one JSON document: an array of {"path","content"}
                         objects, streamed to disk (no in-memory whole-output
                         buffering). No tree banner, no color.

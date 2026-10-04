@@ -29,7 +29,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Tip: everything --output snapshot.txt")
 	}
 
-	if cfg.OutputPath == "" && isInteractive() && cfg.StdoutSafe && !cfg.Force {
+	// --stdout-safe refuses the raw dump; no other flag overrides it. --force
+	// belongs to the file path only: it permits clobbering an existing
+	// --output file, and has no meaning when the output is os.Stdout. Honoring
+	// it here would defeat the whole point of the flag, since a dump pasted
+	// into the user's shell is what it exists to prevent.
+	if cfg.OutputPath == "" && isInteractive() && cfg.StdoutSafe {
 		fmt.Fprintln(os.Stderr, "Refusing unsafe raw stdout dump. Use --output to write to a file.")
 		os.Exit(1)
 	}

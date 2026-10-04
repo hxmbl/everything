@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -215,4 +216,226 @@ func TestJSONAndJSONLConflictExits(t *testing.T) {
 			t.Errorf("%v wrote %q to stdout, want nothing", args, res.stdout)
 		}
 	}
+}
+
+// bannerSection returns everything written before the first file record, which
+// is the directory banner tryPrintTree is responsible for.
+func bannerSection(dump string) string {
+	if idx := strings.Index(dump, "==== FILE: "); idx >= 0 {
+		return dump[:idx]
+	}
+	return dump
+}
+
+// TestTreeBannerEndToEnd drives the banner through main() on a tree built to
+// hit every branch the line filter has: spaces, quotes, unicode, symlinks that
+// tree renders as "name -> target", and secret-looking names that `tree -I`
+// cannot catch on its own because its patterns are lowercase.
+func TestTreeBannerEndToEnd(t *testing.T) {
+	if _, err := exec.LookPath("tree"); err != nil {
+		t.Skip("tree is not installed")
+	}
+	dir := t.TempDir()
+
+	files := []string{
+		"README.md",
+		"name with spaces.txt",
+		"quoted\"name.txt",
+		"café ☕ ünïcödé.txt",
+		"Passwords.md", // tree -I misses it, the line filter drops it
+		"Tokens.md",    // likewise
+		"server.pem",   // tree -I removes this one outright
+		"sub/nested.txt",
+	}
+	for _, name := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("creating parent of %s: %v", name, err)
+		}
+		if err := os.WriteFile(path, []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", name, err)
+		}
+	}
+	symlinks := map[string]string{
+		"link_plain":  "README.md",
+		"link_secret": "Passwords.md",
+		"link_dir":    "sub",
+	}
+	for link, target := range symlinks {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatalf("symlink %s: %v", link, err)
+		}
+	}
+
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "dump.txt")
+	res := runMain(t, "--output", out, "--force", dir)
+	if res.code != 0 {
+		t.Fatalf("exited %d, want 0\nstderr: %s", res.code, res.stderr)
+	}
+	raw, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading the dump: %v", err)
+	}
+	banner := bannerSection(string(raw))
+
+	// The banner opens with the root as an absolute path, which is the one
+	// line that always contains a separator.
+	if !strings.HasPrefix(banner, dir) {
+		t.Errorf("banner does not start with the root %q:\n%s", dir, banner)
+	}
+	for _, want := range []string{
+		"README.md",
+		"name with spaces.txt",
+		"quoted\"name.txt",
+		"café ☕ ünïcödé.txt",
+		"link_plain -> README.md",
+		"link_dir -> sub",
+		"nested.txt",
+	} {
+		if !strings.Contains(banner, want) {
+			t.Errorf("banner is missing %q:\n%s", want, banner)
+		}
+	}
+	// Secrets must not appear in the banner, whether tree's -I removed them
+	// or the line filter did.
+	for _, gone := range []string{"Passwords.md", "Tokens.md", "server.pem", "link_secret"} {
+		if strings.Contains(banner, gone) {
+			t.Errorf("%q leaked into the banner:\n%s", gone, banner)
+		}
+	}
+	// The banner closes with the size report and then a blank line.
+	if !strings.Contains(banner, "directories,") {
+		t.Errorf("banner has no size report:\n%s", banner)
+	}
+	if !strings.HasSuffix(banner, "files\n\n") {
+		t.Errorf("banner does not end with the report and a blank line: %q", banner[len(banner)-40:])
+	}
+	// The file records have to follow it: this is a dump, not a tree listing.
+	if !strings.Contains(string(raw), "==== FILE: "+filepath.Join(dir, "README.md")) {
+		t.Error("the banner displaced the file records")
+	}
+}
+
+// writeTerminalFixture creates a small tree whose raw dump is recognisable.
+func writeTerminalFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "one.txt"), []byte("one\n"), 0o644); err != nil {
+		t.Fatalf("writing fixture: %v", err)
+	}
+	return dir
+}
+
+// TestStdoutSafeRefusesTerminalDumpUnderForce is the regression test for the
+// --stdout-safe refusal being bypassable with --force. The refusal only fires
+// when stdout is a real terminal, so these runs need a pty; runMain's pipes
+// would make isInteractive() false and hide the bug entirely. --force is a
+// flag about clobbering an existing output FILE and has no bearing on a raw
+// stdout dump, so every one of these combinations must refuse.
+func TestStdoutSafeRefusesTerminalDumpUnderForce(t *testing.T) {
+	dir := writeTerminalFixture(t)
+
+	for _, flags := range [][]string{
+		{"--stdout-safe"},
+		{"--stdout-safe", "--force"},
+		{"--stdout-safe", "--overwrite"},
+		{"--force", "--stdout-safe"},
+		{"--stdout-safe", "--json"},
+		{"--stdout-safe", "--include-binaries"},
+	} {
+		res := runMainOnPTY(t, append(append([]string{}, flags...), dir)...)
+
+		if res.code == 0 {
+			t.Errorf("%v %s exited 0 and dumped %d bytes onto the terminal, want a refusal:\n%s",
+				flags, dir, len(res.stdout), truncate(res.stdout, 400))
+		}
+		if !strings.Contains(res.stderr, "Refusing unsafe raw stdout dump") {
+			t.Errorf("%v stderr = %q, want the refusal message", flags, res.stderr)
+		}
+		if res.stdout != "" {
+			t.Errorf("%v wrote %d bytes to the terminal, want nothing:\n%s",
+				flags, len(res.stdout), truncate(res.stdout, 400))
+		}
+	}
+}
+
+// TestStdoutSafeWithOutputFileStillWorks is the other half of the contract:
+// --stdout-safe refuses a raw terminal dump, not the scan. Given --output the
+// same run must complete normally, and --force must keep its real job of
+// overwriting an existing output file.
+func TestStdoutSafeWithOutputFileStillWorks(t *testing.T) {
+	dir := writeTerminalFixture(t)
+	// Output paths live outside the scan root so a later run does not see them.
+	outDir := t.TempDir()
+
+	fresh := filepath.Join(outDir, "fresh.txt")
+	res := runMainOnPTY(t, "--stdout-safe", "--output", fresh, dir)
+	if res.code != 0 {
+		t.Fatalf("--stdout-safe --output exited %d, want 0\nstderr: %s", res.code, res.stderr)
+	}
+	body, err := os.ReadFile(fresh)
+	if err != nil {
+		t.Fatalf("reading %s: %v", fresh, err)
+	}
+	if !strings.Contains(string(body), "one.txt") {
+		t.Errorf("--output file does not contain the dump: %q", body)
+	}
+
+	// The existing file must still need --force...
+	blocked := runMain(t, "--stdout-safe", "--output", fresh, dir)
+	if blocked.code == 0 {
+		t.Errorf("--output over an existing file exited 0, want a refusal\nstderr: %s", blocked.stderr)
+	}
+	if !strings.Contains(blocked.stderr, "Refusing to overwrite existing file") {
+		t.Errorf("--output without --force stderr = %q, want the overwrite refusal", blocked.stderr)
+	}
+
+	// ...and still get overwritten with it, even alongside --stdout-safe.
+	if err := os.WriteFile(fresh, []byte("stale contents that must be gone\n"), 0o644); err != nil {
+		t.Fatalf("seeding stale output file: %v", err)
+	}
+	forced := runMainOnPTY(t, "--stdout-safe", "--force", "--output", fresh, dir)
+	if forced.code != 0 {
+		t.Fatalf("--stdout-safe --force --output exited %d, want 0\nstderr: %s", forced.code, forced.stderr)
+	}
+	body, err = os.ReadFile(fresh)
+	if err != nil {
+		t.Fatalf("re-reading %s: %v", fresh, err)
+	}
+	if strings.Contains(string(body), "stale contents") {
+		t.Errorf("--force did not overwrite the output file: %q", body)
+	}
+	if !strings.Contains(string(body), "one.txt") {
+		t.Errorf("overwritten file does not contain the dump: %q", body)
+	}
+	if forced.stdout != "" {
+		t.Errorf("--output run wrote %d bytes to the terminal, want nothing", len(forced.stdout))
+	}
+}
+
+// TestTerminalDumpWithoutStdoutSafeStillWorks pins the boundary: --stdout-safe
+// is opt-in, and a terminal run without it still dumps as it always has. The
+// fix must not harden anything that only --stdout-safe guards.
+func TestTerminalDumpWithoutStdoutSafeStillWorks(t *testing.T) {
+	dir := writeTerminalFixture(t)
+
+	res := runMainOnPTY(t, dir)
+	if res.code != 0 {
+		t.Fatalf("plain terminal dump exited %d, want 0\nstderr: %s", res.code, res.stderr)
+	}
+	if !strings.Contains(res.stdout, "one.txt") {
+		t.Errorf("terminal dump does not contain the fixture file:\n%s", truncate(res.stdout, 400))
+	}
+	if !strings.Contains(res.stderr, "Warning: large stdout dumps can break shell input") {
+		t.Errorf("stderr = %q, want the large-stdout warning", res.stderr)
+	}
+}
+
+// truncate shortens s for use in failure messages.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + fmt.Sprintf("... [%d more bytes]", len(s)-n)
 }

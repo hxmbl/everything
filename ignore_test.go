@@ -319,3 +319,88 @@ func TestShouldSkipPrecedence(t *testing.T) {
 		}
 	}
 }
+
+// TestFilterTreeLine covers the one function that decides whether a line of
+// `tree` output survives into the dump. It is a pure string predicate, so every
+// branch is reachable without spawning anything, and it had no coverage at all
+// before: neither tryPrintTree nor filterTreeLine was exercised by the suite.
+func TestFilterTreeLine(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want bool // true == drop the line
+	}{
+		// Plain names, with and without a box-drawing prefix.
+		{"plain", "README.md", false},
+		{"plain with extension that looks secret", "notes.txt", false},
+		{"branch", "├── main.go", false},
+		{"last branch", "└── main.go", false},
+		{"nested prefix", "│   └── main.go", false},
+		{"nested mixed prefix", "│   ├── deep.go", false},
+		{"deeper nesting", "    │   │   └── deep.go", false},
+
+		// Names tree's own -I does not catch, because its patterns are
+		// lowercase: the Go-side filter is the second line of defence.
+		{"uppercase secret word", "├── Passwords.md", true},
+		{"uppercase token word", "├── Tokens.md", true},
+		{"aws prefix", "├── awsome-notes.txt", true},
+		{"env file", "├── .env.local", true},
+		{"ssh key", "├── id_ed25519", true},
+		{"certificate", "├── server.pem", true},
+		{"credentials", "├── credentials.yml", true},
+		{"dir named like a secret", "└── secrets.json", true},
+		{"nested secret", "│   └── Passwords.md", true},
+
+		// The same words in source files are code, not secrets.
+		{"auth.go", "├── auth.go", false},
+		{"tokenizer.go", "└── tokenizer.go", false},
+		{"private.go", "├── private.go", false},
+		{"service account json", "├── service-account.json", true},
+		{"secret manager go", "└── secretsmanager.go", false},
+
+		// The " -> " branch: only the target decides, and only its base name.
+		{"symlink to ordinary file", "├── link -> README.md", false},
+		{"symlink to secret-looking target", "├── link -> Passwords.md", true},
+		{"symlink to secret-looking file", "├── link -> .env.local", true},
+		{"symlink to secret directory", "└── link -> secrets", true},
+		{"symlink to ordinary directory", "├── link -> sub", false},
+		{"dangling symlink to absolute path", "├── link -> /nonexistent/nowhere", false},
+		{"symlink to secret-looking path, ordinary base", "├── link -> /etc/private/hosts", false},
+		{"nested symlink to secret", "│   └── link -> Tokens.md", true},
+		{"trailing spaces after target", "├── link -> README.md   ", false},
+
+		// A name containing "/" is given the benefit of the doubt: the line is
+		// kept rather than risk dropping real source. The root line of every
+		// absolute-path run goes through this branch. The arrow is checked
+		// first, so a name that merely contains " -> " is judged on what
+		// follows the arrow -- wrong, but what the dump has always printed.
+		{"absolute root", "/home/user/project", false},
+		{"path in name", "├── a/b", false},
+		{"name containing an arrow", "├── weird -> arrow.txt", false},
+		{"arrow then a path", "├── link -> a/b", false},
+
+		// Spaces, unicode, quotes and control bytes must not confuse it.
+		{"spaces", "├── name with spaces.txt", false},
+		{"quotes", "├── quoted\"name.txt", false},
+		{"backslash", "├── back\\slash.txt", false},
+		{"unicode", "├── café ☕ ünïcödé.txt", false},
+		{"emoji", "├── emoji 🎉 party.txt", false},
+		{"invalid utf-8", "├── caf\xff.txt", false},
+		{"trailing tab", "├── tab\tinside.txt", false},
+		{"secret word mid-name is not the word", "├── my private notes.txt", false},
+
+		// The report lines are counts, not names, and must reach the dump:
+		// dropping them would hide how big the tree was.
+		{"summary", "3 directories, 5 files", false},
+		{"summary singular", "1 directory, 1 file", false},
+		{"files only", "12 files", false},
+		{"file singular", "1 file", false},
+		{"zero directories", "0 directories, 0 files", false},
+	}
+
+	for _, c := range cases {
+		if got := filterTreeLine(c.line); got != c.want {
+			t.Errorf("filterTreeLine(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
