@@ -130,6 +130,21 @@ everything --benchmark --runs 5
 - The output file itself (prevents infinite loops)
 - The running binary (prevents self-dumping)
 - `.git/`, `target/`, `.DS_Store`, `._*` files (always)
+- Generated/cache directories, by name, at any depth: `.build/` (SwiftPM),
+  `DerivedData/`, `Pods/`, `Carthage/`, `_build/` (Elixir), `elm-stuff/`,
+  `.stack-work/`, `.dart_tool/`, `.gradle/`, `.m2/`, `.tox/`, `.nox/`, `.eggs/`,
+  `.next/`, `.nuxt/`, `.svelte-kit/`, `.astro/`, `.parcel-cache/`, `.turbo/`,
+  `.terraform/`, and the existing `build/`, `dist/`, `out/`, `bin/`, `vendor/`,
+  `coverage/`, `htmlcov/`, `.nyc_output/`, `.cache/`
+- Tool caches: `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`,
+  `.ipynb_checkpoints/`, `.ropeproject/`, `.history/`
+- Generated text artifacts the binary sniff cannot catch: `*.min.js`,
+  `*.min.mjs`, `*.min.css`, `*.map` (source maps), `.coverage`, `lcov.info`,
+  `*.lcov`, `*.log`, `*.tmp`, `*.swp`, `*~`
+
+  Matching is per path component, not substring, so `bin/` never takes
+  `combine.go` with it. Compiled objects (`.o`, `.so`, `.exe`, `.pyc`) are not
+  listed: they are already binary and skipped as such.
 - Symlinks (unless `--follow-symlinks`; directory symlinks always skipped)
 - Pipes, devices, and sockets (prevents hanging)
 - Binary files (unless `--include-binaries`)
@@ -138,6 +153,18 @@ everything --benchmark --runs 5
 - Files whose first 4KB contains a PEM private key block (`-----BEGIN ... PRIVATE KEY`)
 
 Run with `--omitted-disclaimer` to see exactly what got skipped before sharing.
+
+Defaults are a floor, not a cage. Anything skipped by default can be scanned
+again by name:
+
+```bash
+everything --include ".build,dist" ...   # undo a default skip
+everything --exclude secrets ...         # skip more
+everything --include-venv ...            # .venv, venv, __pycache__, node_modules
+```
+
+`--include` lifts a *default*; an explicit `--exclude` still wins over it, since
+naming a path outright is the more deliberate instruction.
 
 ## Benchmark Mode
 

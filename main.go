@@ -13,7 +13,9 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -50,6 +52,7 @@ type Config struct {
 	OutputPath string
 	InputDirs  []string
 	Exclude    map[string]bool
+	Include    map[string]bool
 
 	MaxSize int64
 
@@ -92,10 +95,130 @@ func isInteractive() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-const treeIgnorePattern = ".git|target|build|dist|out|bin|vendor|coverage|.next|.nuxt|.cache|temp|tmp|logs|node_modules|.venv|venv|__pycache__|" +
-	"*.pem|*.key|*.p12|*.pfx|*.jks|*.keystore|*.jceks|*.kdbx|*.crt|*.cer|*.der|*.csr|*.asc|*.gpg|*.pgp|" +
-	"credentials*|client_secret*|client-secret*|*service-account*|secrets.*|secret*|auth*|token*|password*|api_key*|private*|aws*|" +
-	"*.env|id_rsa*|id_ed25519*|id_ecdsa*|id_dsa*"
+// IGNORE PATTERNS
+//
+// defaultIgnoreDirs is the single source of truth for directory names that are
+// generated, cached, vendored, or otherwise not hand-written. It is consulted
+// by shouldSkip and, through treeIgnoreDirsPattern, by the `tree` renderer, so
+// the two cannot drift apart the way a hand-copied regex did.
+//
+// Every entry is matched against a single path component (the directory's own
+// name), never a substring, so "bin" does not swallow "combine.go".
+var defaultIgnoreDirs = []string{
+	// Version control
+	".git", ".svn", ".hg", ".bzr",
+
+	// Compiler and bundler output
+	"target", "build", "dist", "out", "bin", "vendor",
+	"_build", // Elixir
+
+	// Xcode / Swift
+	".build", "DerivedData", "Pods", "Carthage",
+
+	// Java / JVM
+	".gradle", ".m2", ".ivy2",
+
+	// JavaScript / TypeScript framework caches
+	".next", ".nuxt", ".svelte-kit", ".astro", ".docusaurus", ".parcel-cache",
+	".turbo", ".angular", ".expo", ".vercel", ".netlify",
+
+	// Other language tool caches
+	".dart_tool", ".pub-cache", "elm-stuff", ".stack-work",
+	".tox", ".nox", ".eggs", ".ipynb_checkpoints", ".ropeproject",
+	".terraform",
+
+	// Test and coverage output
+	"coverage", "htmlcov", ".nyc_output", ".pytest_cache", ".mypy_cache",
+	".ruff_cache", ".cache",
+
+	// Transient scratch
+	"temp", "tmp", ".tmp", "logs",
+
+	// Editor and IDE state
+	".vscode", ".idea", ".eclipse", ".settings", ".fleet", ".history",
+}
+
+// venvIgnoreDirs are dependency trees that are skipped by default but are
+// reversible with a single switch, because unlike build output they are large
+// enough that someone scanning a vendored tree may actually want them.
+var venvIgnoreDirs = []string{
+	".venv", "venv", "__pycache__", "node_modules",
+}
+
+// defaultIgnoreFiles are generated artifacts that are text, so the binary
+// sniff does not catch them. Compiled objects (.o, .so, .exe, .pyc) are
+// deliberately absent: those are already binary and skipped as such.
+var defaultIgnoreFiles = []string{
+	// Minified bundles and source maps
+	"*.min.js", "*.min.mjs", "*.min.css", "*.map",
+
+	// Coverage reports
+	".coverage", "lcov.info", "*.lcov",
+
+	// Transient output and editor leftovers
+	"*.log", "*.tmp", "*.swp", "*.swo", "*~",
+	"npm-debug.log", "yarn-error.log",
+}
+
+var (
+	defaultIgnoreDirSet = nameSet(defaultIgnoreDirs)
+	venvIgnoreDirSet    = nameSet(venvIgnoreDirs)
+)
+
+// nameSet turns a list of exact names into a lookup set.
+func nameSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
+}
+
+// matchesAnyPattern reports whether name matches any of the given glob
+// patterns. Patterns are matched against the single path component, so a "*"
+// never crosses a directory separator.
+func matchesAnyPattern(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if ok, err := path.Match(p, name); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// treeSecretPatterns are the secret-looking name globs handed to `tree`.
+// Kept verbatim from the original pattern: `tree -I` matches one path
+// component at a time, and these forms are the ones that have always worked.
+var treeSecretPatterns = []string{
+	"*.pem", "*.key", "*.p12", "*.pfx", "*.jks", "*.keystore", "*.jceks",
+	"*.kdbx", "*.crt", "*.cer", "*.der", "*.csr", "*.asc", "*.gpg", "*.pgp",
+	"credentials*", "client_secret*", "client-secret*", "*service-account*",
+	"secrets.*", "secret*", "auth*", "token*", "password*", "api_key*",
+	"private*", "aws*",
+	"*.env", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+}
+
+// treeIgnorePattern renders every ignore list into the single alternation that
+// `tree -I` expects. Deriving it here is the point: the renderer and the walker
+// now read the same lists, so a directory skipped by shouldSkip cannot be
+// missing from the rendered tree.
+//
+// One pattern has to serve two matchers, which differ in syntax. `tree -I`
+// applies fnmatch-style globs to each path component, while Go's regexp wants
+// `.pem` rather than a leading `*.pem`. Keeping the globs here and stripping
+// the leading star for the Go-side assertions keeps both honest; see
+// treeIgnorePatternRe.
+var treeIgnorePattern = strings.Join(append(
+	append(append([]string{}, defaultIgnoreDirs...), venvIgnoreDirs...),
+	append(append([]string{}, defaultIgnoreFiles...), treeSecretPatterns...)...,
+), "|")
+
+// treeIgnorePatternRe is treeIgnorePattern rewritten for Go's regexp engine, so
+// tests can assert the rendered pattern actually covers the lists. The leading
+// "*" of a glob becomes "." (any character) and "." becomes "\.".
+var treeIgnorePatternRe = regexp.MustCompile(
+	strings.NewReplacer(".", `\.`, "*", ".").Replace(treeIgnorePattern),
+)
 
 func filterTreeLine(line string) bool {
 	if idx := strings.Index(line, " -> "); idx >= 0 {
@@ -780,6 +903,7 @@ func validateConfig(cfg *Config) error {
 func parseArgs() *Config {
 	cfg := &Config{
 		Exclude:         make(map[string]bool),
+		Include:         make(map[string]bool),
 		excludeAbsPaths: make(map[string]bool),
 		IgnoreVenv:      true,
 		Warmup:          1,
@@ -806,6 +930,7 @@ func parseArgs() *Config {
 		"--no-color": true, "--stdout-safe": true, "--force": true,
 		"--overwrite": true, "--json": true, "--jsonl": true, "--omitted-disclaimer": true,
 		"--follow-symlinks": true, "--exclude": true, "--ignore": true,
+		"--include":  true,
 		"--max-size": true, "--version": true, "-v": true,
 		"--benchmark": true, "--bench": true, "--runs": true, "--warmup": true,
 		"--help": true, "-h": true,
@@ -926,6 +1051,19 @@ func parseArgs() *Config {
 				name = filepath.FromSlash(strings.TrimSpace(name))
 				if name != "" {
 					cfg.Exclude[name] = true
+				}
+			}
+
+		case "--include":
+			i++
+			if i >= len(args) {
+				fmt.Fprintln(os.Stderr, "error: --include requires a comma-separated list argument")
+				os.Exit(1)
+			}
+			for _, name := range strings.Split(args[i], ",") {
+				name = filepath.FromSlash(strings.TrimSpace(name))
+				if name != "" {
+					cfg.Include[name] = true
 				}
 			}
 
@@ -1062,6 +1200,9 @@ Filtering:
                         and special files (pipes/devices/sockets) always are.
   --include-venv        Stop auto-skipping .venv, venv, __pycache__,
                         node_modules (they're skipped by default).
+  --include <list>      Comma-separated names or paths to scan even though they
+                        are skipped by default (e.g. --include ".build,dist").
+                        Undoes a default only: --exclude still wins.
   --omitted-disclaimer  Print the list of skipped files to stderr after the
                         scan finishes.
 
@@ -1092,9 +1233,13 @@ Other:
   --version, -v         Print the version and exit.
   --help, -h            Print this help and exit.
 
-Always skipped: .git, target/, build/, dist/, out/, bin/, vendor/, coverage/,
-.next/, .nuxt/, .cache/, temp/, tmp/, logs/, .DS_Store, ._*, .vscode/, .idea/,
-.eclipse/, .settings/, symlinks (unless --follow-symlinks), pipes/devices/sockets,
+Always skipped: .git, target/, build/, dist/, out/, bin/, vendor/, _build/,
+.next/, .nuxt/, .svelte-kit/, .astro/, .cache/, .turbo/, .gradle/, .build/,
+DerivedData/, Pods/, .tox/, .pytest_cache/, .mypy_cache/, .ruff_cache/,
+htmlcov/, .nyc_output/, .terraform/, elm-stuff/, .dart_tool/, .stack-work/,
+temp/, tmp/, logs/, .DS_Store, ._*, .vscode/, .idea/, .eclipse/, .settings/,
+minified bundles (*.min.js, *.min.css), source maps (*.map), coverage reports,
+*.log, symlinks (unless --follow-symlinks), pipes/devices/sockets,
 binaries (unless --include-binaries), and secret-looking files: .env*, *.env,
 id_rsa*/id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
 *.keystore, *.kdbx, *.crt, *.cer, *.der, *.csr, *.asc, *.gpg, *.pgp,
@@ -1247,35 +1392,27 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		return true
 	}
 
-	if base == ".git" || strings.Contains(path, string(filepath.Separator)+".git"+string(filepath.Separator)) || strings.HasPrefix(path, ".git"+string(filepath.Separator)) {
-		return true
-	}
-
-	if base == "target" {
-		return true
-	}
-
-	// Common build and output directories
-	switch base {
-	case "build", "dist", "out", "bin", "vendor", "coverage", ".next", ".nuxt", ".cache", "temp", "tmp", "logs":
-		return true
-	}
-
-	// IDE directories
-	switch base {
-	case ".vscode", ".idea", ".eclipse", ".settings":
-		return true
-	}
-
-	if cfg.IgnoreVenv {
-		switch base {
-		case ".venv", "venv", "__pycache__", "node_modules":
-			return true
-		}
-	}
-
+	// Precedence, most specific first:
+	//
+	//  1. an explicit --exclude, because naming a path is a deliberate act
+	//     and --include exists to undo a default, not to argue with a choice;
+	//  2. the default generated/cache directories, which --include can lift;
+	//  3. the dependency trees behind --ignore-venv.
 	if cfg.Exclude[base] || cfg.Exclude[path] {
 		return true
+	}
+
+	included := cfg.Include[base] || cfg.Include[path]
+	if !included {
+		if defaultIgnoreDirSet[base] {
+			return true
+		}
+		if cfg.IgnoreVenv && venvIgnoreDirSet[base] {
+			return true
+		}
+		if matchesAnyPattern(base, defaultIgnoreFiles) {
+			return true
+		}
 	}
 
 	if len(cfg.excludeAbsPaths) > 0 {
