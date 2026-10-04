@@ -31,7 +31,7 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-var version = "v1.9.1"
+var version = "v1.10.0"
 
 var (
 	peekPool = sync.Pool{New: func() any {
