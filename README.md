@@ -77,7 +77,7 @@ everything --color | less -R
 | `--include-venv`           | Include venv directories (skipped by default)                | `--include-venv`                       |
 | `--json`                   | Output JSON array of `{"path","content"}` objects             | `everything --json --output out.json` |
 | `--jsonl`                  | Output JSON Lines (one object per line)                      | `everything --jsonl --output out.jsonl` |
-| `--omitted-disclaimer`     | List skipped files on stderr at end of scan                  | `--omitted-disclaimer`                 |
+| `--no-omitted-disclaimer`  | Don't list skipped files on stderr at end of scan (default)  | `everything --no-omitted-disclaimer`   |
 | `--follow-symlinks`        | Read file symlinks (skipped by default)                      | `--follow-symlinks`                    |
 | `--stdout-safe`            | Refuse to dump to interactive terminal without `--output`    | `--stdout-safe`                        |
 | `--benchmark`              | Time traversal instead of writing snapshot                    | `everything --benchmark`               |
@@ -116,8 +116,10 @@ everything --jsonl --output feed.jsonl
 everything --output audit.txt
 # (tree output included automatically if you have `tree` installed)
 
-# See what got skipped (and why)
-everything --output audit.txt --omitted-disclaimer
+# See what got skipped (and why) — listed on stderr automatically
+everything --output audit.txt
+# ... or silence that list
+everything --output audit.txt --no-omitted-disclaimer
 
 # Profile traversal speed/size (repeat 5x for stable stats)
 everything --benchmark --runs 5
@@ -152,7 +154,8 @@ everything --benchmark --runs 5
 - Secret-looking files: `.env*`, `*.env`, `id_rsa*`, `id_ed25519*`, `id_dsa*`, `id_ecdsa*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`, `*.kdbx`, `credentials*`, `client_secret*`, `*service-account*.json`, `secrets.*`, `.netrc`, `.htpasswd`, `.npmrc`, `.pypirc`, `.git-credentials`
 - Files whose first 4KB contains a PEM private key block (`-----BEGIN ... PRIVATE KEY`)
 
-Run with `--omitted-disclaimer` to see exactly what got skipped before sharing.
+Skipped files are listed on stderr after every run — check that list before
+sharing. Pass `--no-omitted-disclaimer` if you don't want it.
 
 Defaults are a floor, not a cage. Anything skipped by default can be scanned
 again by name:

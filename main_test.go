@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -707,5 +709,218 @@ func TestValidateConfig(t *testing.T) {
 		if !c.wantErr && err != nil {
 			t.Errorf("%s: unexpected error: %v", c.name, err)
 		}
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns
+// whatever was written to it. Both the deprecation warning and the omitted-file
+// disclaimer are stderr-only, so tests redirect rather than let them leak into
+// the test log.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+
+	// Drain concurrently: the disclaimer can be tens of kilobytes, which would
+	// otherwise fill the pipe buffer and deadlock fn.
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fn()
+
+	os.Stderr = orig
+	w.Close()
+	out := <-done
+	r.Close()
+	return out
+}
+
+func TestParseArgsDefaults(t *testing.T) {
+	cfg := parseArgsFrom(nil)
+	if !cfg.OmittedDisclaimer {
+		t.Error("OmittedDisclaimer = false, want true (default-on)")
+	}
+	if !cfg.IgnoreVenv {
+		t.Error("IgnoreVenv = false, want true")
+	}
+	if cfg.Warmup != 1 {
+		t.Errorf("Warmup = %d, want 1", cfg.Warmup)
+	}
+	if cfg.OutputPath != "" {
+		t.Errorf("OutputPath = %q, want empty", cfg.OutputPath)
+	}
+	if cfg.InputDirs != nil {
+		t.Errorf("InputDirs = %v, want nil", cfg.InputDirs)
+	}
+	if cfg.Exclude == nil || cfg.Include == nil || cfg.excludeAbsPaths == nil {
+		t.Error("expected the Exclude, Include, and excludeAbsPaths maps to be initialized")
+	}
+}
+
+func TestParseArgsOmittedDisclaimer(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"on when no disclaimer flag is given", nil, true},
+		{"opt out", []string{"--no-omitted-disclaimer"}, false},
+		{"deprecated alias is a no-op", []string{"--omitted-disclaimer"}, true},
+		{"deprecated alias does not undo the opt out", []string{"--no-omitted-disclaimer", "--omitted-disclaimer"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var cfg *Config
+			captureStderr(t, func() { cfg = parseArgsFrom(c.args) })
+			if cfg.OmittedDisclaimer != c.want {
+				t.Errorf("OmittedDisclaimer = %v, want %v", cfg.OmittedDisclaimer, c.want)
+			}
+		})
+	}
+}
+
+func TestParseArgsNoOmittedDisclaimerTakesNoValue(t *testing.T) {
+	// The flag must be registered as a no-argument flag, otherwise the next
+	// argument is swallowed as its value.
+	cfg := parseArgsFrom([]string{"--no-omitted-disclaimer", "--json", "--max-size", "1MB"})
+	if cfg.OmittedDisclaimer {
+		t.Error("OmittedDisclaimer = true, want false")
+	}
+	if !cfg.JSON {
+		t.Error("JSON = false, want true (flag was swallowed as a value)")
+	}
+	if cfg.MaxSize != 1<<20 {
+		t.Errorf("MaxSize = %d, want %d", cfg.MaxSize, 1<<20)
+	}
+}
+
+func TestOmittedDisclaimerAliasWarns(t *testing.T) {
+	var cfg *Config
+	out := captureStderr(t, func() { cfg = parseArgsFrom([]string{"--omitted-disclaimer"}) })
+	if !cfg.OmittedDisclaimer {
+		t.Error("OmittedDisclaimer = false, want true")
+	}
+	if !strings.Contains(out, "--omitted-disclaimer is now the default") {
+		t.Errorf("missing deprecation warning, got %q", out)
+	}
+}
+
+func TestNoOmittedDisclaimerIsSilent(t *testing.T) {
+	// Nothing may be persisted or warned about: the opt-out is per-invocation.
+	out := captureStderr(t, func() { parseArgsFrom([]string{"--no-omitted-disclaimer"}) })
+	if out != "" {
+		t.Errorf("got stderr output %q, want none", out)
+	}
+}
+
+func TestParseArgsFlags(t *testing.T) {
+	dir := t.TempDir()
+	cfg := parseArgsFrom([]string{"--json", "--exclude", "vendor,tmp", "--output", "out.txt", dir})
+	if !cfg.JSON || cfg.JSONL {
+		t.Errorf("JSON = %v, JSONL = %v, want true/false", cfg.JSON, cfg.JSONL)
+	}
+	if !cfg.Exclude["vendor"] || !cfg.Exclude["tmp"] {
+		t.Errorf("Exclude = %v, want vendor and tmp", cfg.Exclude)
+	}
+	if cfg.OutputPath != "out.txt" {
+		t.Errorf("OutputPath = %q, want %q", cfg.OutputPath, "out.txt")
+	}
+	if len(cfg.InputDirs) != 1 || cfg.InputDirs[0] != dir {
+		t.Errorf("InputDirs = %v, want [%s]", cfg.InputDirs, dir)
+	}
+}
+
+func TestParseArgsAliases(t *testing.T) {
+	cfg := parseArgsFrom([]string{"--overwrite", "--ignore", "a,b", "--include-binary"})
+	if !cfg.Force {
+		t.Error("--overwrite did not set Force")
+	}
+	if !cfg.Exclude["a"] || !cfg.Exclude["b"] {
+		t.Errorf("Exclude = %v, want a and b", cfg.Exclude)
+	}
+	if !cfg.IncludeBinaries {
+		t.Error("--include-binary did not set IncludeBinaries")
+	}
+}
+
+func TestParseArgsJSON(t *testing.T) {
+	cfg := parseArgsFrom([]string{"--json"})
+	if !cfg.JSON || cfg.JSONL {
+		t.Errorf("JSON = %v, JSONL = %v, want true/false", cfg.JSON, cfg.JSONL)
+	}
+}
+
+func TestRecordSkipCapsStoredList(t *testing.T) {
+	cfg := &Config{OmittedDisclaimer: true}
+	const overflow = 37
+	total := maxStoredSkips + overflow
+	for i := 0; i < total; i++ {
+		cfg.recordSkip(fmt.Sprintf("  skip %d", i))
+	}
+	if len(cfg.SkippedFiles) != maxStoredSkips {
+		t.Errorf("stored %d entries, want %d", len(cfg.SkippedFiles), maxStoredSkips)
+	}
+	if cfg.skippedTotal != total {
+		t.Errorf("skippedTotal = %d, want %d (uncapped)", cfg.skippedTotal, total)
+	}
+	if last := cfg.SkippedFiles[len(cfg.SkippedFiles)-1]; last != fmt.Sprintf("  skip %d", maxStoredSkips-1) {
+		t.Errorf("last stored entry = %q, want %q", last, fmt.Sprintf("  skip %d", maxStoredSkips-1))
+	}
+}
+
+func TestRecordSkipDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.recordSkip("  skip 0")
+	if len(cfg.SkippedFiles) != 0 || cfg.skippedTotal != 0 {
+		t.Errorf("recorded a skip while disabled: stored=%d total=%d", len(cfg.SkippedFiles), cfg.skippedTotal)
+	}
+}
+
+func TestPrintOmittedDisclaimerOverflow(t *testing.T) {
+	cfg := &Config{OmittedDisclaimer: true}
+	const overflow = 37
+	for i := 0; i < maxStoredSkips+overflow; i++ {
+		cfg.recordSkip(fmt.Sprintf("  skip %d", i))
+	}
+	out := captureStderr(t, func() { printOmittedDisclaimer(cfg) })
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != maxStoredSkips+3 {
+		t.Fatalf("printed %d lines, want %d", len(lines), maxStoredSkips+3)
+	}
+	if lines[0] != "---" || lines[1] != "Omitted files:" {
+		t.Errorf("header = %q / %q, want %q / %q", lines[0], lines[1], "---", "Omitted files:")
+	}
+	if lines[2] != "  skip 0" {
+		t.Errorf("first entry = %q, want a two-space indent", lines[2])
+	}
+	wantTail := fmt.Sprintf("  ... and %d more omitted files (use --no-omitted-disclaimer to silence this)", overflow)
+	if last := lines[len(lines)-1]; last != wantTail {
+		t.Errorf("overflow line = %q, want %q", last, wantTail)
+	}
+}
+
+func TestPrintOmittedDisclaimerNoOverflow(t *testing.T) {
+	cfg := &Config{OmittedDisclaimer: true}
+	cfg.recordSkip("  skip 0")
+	out := captureStderr(t, func() { printOmittedDisclaimer(cfg) })
+	want := "---\nOmitted files:\n  skip 0\n"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}
+
+func TestPrintOmittedDisclaimerSilentWhenDisabled(t *testing.T) {
+	cfg := &Config{}
+	cfg.recordSkip("  skip 0")
+	if out := captureStderr(t, func() { printOmittedDisclaimer(cfg) }); out != "" {
+		t.Errorf("got %q, want no output", out)
 	}
 }

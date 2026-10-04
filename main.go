@@ -67,6 +67,7 @@ type Config struct {
 	JSONL             bool
 	OmittedDisclaimer bool
 	SkippedFiles      []string
+	skippedTotal      int
 	stdoutInode       uint64
 	outputInode       uint64
 	exeInode          uint64
@@ -77,11 +78,40 @@ type Config struct {
 	excludeAbsPaths map[string]bool
 }
 
+// maxStoredSkips caps how many skip messages are kept in memory for the
+// omitted-file disclaimer. The disclaimer is on by default, so an unbounded
+// list would tax every run; the worst case is a broken pipe, where every
+// remaining file records a write error. The skippedTotal counter is never
+// capped, so the summary can still report the true number of omitted files.
+const maxStoredSkips = 1000
+
 // recordSkip records a skip message if OmittedDisclaimer is enabled.
-// This is used to track which files were skipped and why.
+// This is used to track which files were skipped and why. At most
+// maxStoredSkips messages are kept; skippedTotal counts every skip.
 func (cfg *Config) recordSkip(msg string) {
-	if cfg.OmittedDisclaimer {
+	if !cfg.OmittedDisclaimer {
+		return
+	}
+	cfg.skippedTotal++
+	if len(cfg.SkippedFiles) < maxStoredSkips {
 		cfg.SkippedFiles = append(cfg.SkippedFiles, msg)
+	}
+}
+
+// printOmittedDisclaimer writes the list of skipped files to stderr after the
+// scan. It prints at most the stored entries plus a trailing line reporting how
+// many more files were omitted.
+func printOmittedDisclaimer(cfg *Config) {
+	if !cfg.OmittedDisclaimer || len(cfg.SkippedFiles) == 0 {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "---")
+	fmt.Fprintln(os.Stderr, "Omitted files:")
+	for _, s := range cfg.SkippedFiles {
+		fmt.Fprintln(os.Stderr, s)
+	}
+	if extra := cfg.skippedTotal - len(cfg.SkippedFiles); extra > 0 {
+		fmt.Fprintf(os.Stderr, "  ... and %d more omitted files (use --no-omitted-disclaimer to silence this)\n", extra)
 	}
 }
 
@@ -384,13 +414,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if cfg.OmittedDisclaimer && len(cfg.SkippedFiles) > 0 {
-		fmt.Fprintln(os.Stderr, "---")
-		fmt.Fprintln(os.Stderr, "Omitted files:")
-		for _, s := range cfg.SkippedFiles {
-			fmt.Fprintln(os.Stderr, s)
-		}
-	}
+	printOmittedDisclaimer(cfg)
 }
 
 //
@@ -901,12 +925,20 @@ func validateConfig(cfg *Config) error {
 // parseArgs parses command-line arguments and returns a Config struct.
 // It handles all flags, validation, and default values.
 func parseArgs() *Config {
+	return parseArgsFrom(os.Args[1:])
+}
+
+// parseArgsFrom parses the given arguments (without the program name) and
+// returns a Config struct. It is the body of parseArgs, split out so tests
+// can exercise flag handling without reading os.Args.
+func parseArgsFrom(args []string) *Config {
 	cfg := &Config{
-		Exclude:         make(map[string]bool),
-		Include:         make(map[string]bool),
-		excludeAbsPaths: make(map[string]bool),
-		IgnoreVenv:      true,
-		Warmup:          1,
+		Exclude:           make(map[string]bool),
+		Include:           make(map[string]bool),
+		excludeAbsPaths:   make(map[string]bool),
+		IgnoreVenv:        true,
+		Warmup:            1,
+		OmittedDisclaimer: true,
 	}
 
 	if exe, err := os.Executable(); err == nil {
@@ -929,14 +961,13 @@ func parseArgs() *Config {
 		"--list-themes": true, "--color": true, "--highlight": true,
 		"--no-color": true, "--stdout-safe": true, "--force": true,
 		"--overwrite": true, "--json": true, "--jsonl": true, "--omitted-disclaimer": true,
-		"--follow-symlinks": true, "--exclude": true, "--ignore": true,
+		"--no-omitted-disclaimer": true,
+		"--follow-symlinks":       true, "--exclude": true, "--ignore": true,
 		"--include":  true,
 		"--max-size": true, "--version": true, "-v": true,
 		"--benchmark": true, "--bench": true, "--runs": true, "--warmup": true,
 		"--help": true, "-h": true,
 	}
-
-	args := os.Args[1:]
 
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -1036,7 +1067,12 @@ func parseArgs() *Config {
 			cfg.JSONL = true
 
 		case "--omitted-disclaimer":
-			cfg.OmittedDisclaimer = true
+			// Deprecated alias: the disclaimer is on by default, so this is a
+			// harmless no-op kept only for existing scripts.
+			fmt.Fprintln(os.Stderr, "warning: --omitted-disclaimer is now the default and will be removed; use --no-omitted-disclaimer to disable")
+
+		case "--no-omitted-disclaimer":
+			cfg.OmittedDisclaimer = false
 
 		case "--follow-symlinks":
 			cfg.FollowSymlinks = true
@@ -1203,8 +1239,9 @@ Filtering:
   --include <list>      Comma-separated names or paths to scan even though they
                         are skipped by default (e.g. --include ".build,dist").
                         Undoes a default only: --exclude still wins.
-  --omitted-disclaimer  Print the list of skipped files to stderr after the
-                        scan finishes.
+  --no-omitted-disclaimer
+                        Don't print the list of skipped files to stderr after
+                        the scan (the list is printed by default).
 
 Appearance:
   --color, --highlight  Syntax-highlight the output (preference is saved;
@@ -1246,8 +1283,8 @@ id_rsa*/id_ed25519*/id_dsa*/id_ecdsa*, *.pem, *.key, *.p12, *.pfx, *.jks,
 credentials*, client_secret*, *service-account*.json, secrets.*, secret*,
 auth*, token*, password*, api_key*, private*, aws*, .netrc, .htpasswd,
 .npmrc, .pypirc, .git-credentials, plus any file whose content contains a
-PEM private key block. Skipped files are listed with --omitted-disclaimer —
-check it before sharing a dump.
+PEM private key block. Skipped files are listed on stderr after the scan —
+check that list before sharing; use --no-omitted-disclaimer to silence it.
 
 Examples:
   everything --output snapshot.txt                recommended starting point
@@ -1259,7 +1296,7 @@ Examples:
   everything --jsonl --output out.jsonl            JSON Lines for scripts
   everything --color | less -R                    paged, highlighted viewing
   everything | grep "TODO"                        search the whole project
-  everything --omitted-disclaimer --output ctx.txt  see what got left out`)
+  everything --output ctx.txt                     see what got left out`)
 }
 
 // parseSize parses a human-readable size string (e.g., "1MB", "500KB") into bytes.
