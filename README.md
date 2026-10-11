@@ -220,4 +220,4 @@ Real use cases people actually use this for:
 
 ## License
 
-No.
+MIT — see [LICENSE](LICENSE).
