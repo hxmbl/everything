@@ -1,11 +1,11 @@
 // Regression tests for terminal detection.
 //
-// isInteractive() reads the real process stdout, so it cannot be unit tested
+// IsInteractive reads the real process stdout, so it cannot be unit tested
 // directly. What can be tested is the decision it is built from: the
 // character-device prefilter (modeLooksInteractive) and the composition that
 // also consults the termios probe (interactiveFile).
 
-package main
+package terminal
 
 import (
 	"os"

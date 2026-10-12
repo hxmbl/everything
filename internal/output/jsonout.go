@@ -2,7 +2,7 @@
 // cannot stream a string it has not already buffered whole, and this tool
 // streams file contents of arbitrary size.
 
-package main
+package output
 
 import (
 	"encoding/json"
@@ -12,19 +12,10 @@ import (
 
 const hexDigits = "0123456789abcdef"
 
-// jsonEscaper is a custom JSON string escaper that handles UTF-8 encoding correctly.
-// It ensures that multi-byte UTF-8 sequences are not split across escape boundaries.
-type jsonEscaper struct {
-	dst      io.Writer
-	buf      []byte // pooled scratch; escapes are staged here, not written one by one
-	pending  [utf8.UTFMax]byte
-	nPending int
-	err      error
-}
-
-// utf8SeqLen returns the expected length of a UTF-8 sequence starting with byte b.
-// Returns 0 if b is not a valid UTF-8 sequence start byte.
-func utf8SeqLen(b byte) int {
+// Utf8SeqLen returns the expected length of a UTF-8 sequence starting with byte b.
+// Returns 0 if b is not a valid UTF-8 sequence start byte. It is shared with the
+// benchmark counter, which has to track rune boundaries across buffer reads.
+func Utf8SeqLen(b byte) int {
 	switch {
 	case b&0xE0 == 0xC0:
 		return 2
@@ -35,6 +26,16 @@ func utf8SeqLen(b byte) int {
 	default:
 		return 0
 	}
+}
+
+// jsonEscaper is a custom JSON string escaper that handles UTF-8 encoding correctly.
+// It ensures that multi-byte UTF-8 sequences are not split across escape boundaries.
+type jsonEscaper struct {
+	dst      io.Writer
+	buf      []byte // pooled scratch; escapes are staged here, not written one by one
+	pending  [utf8.UTFMax]byte
+	nPending int
+	err      error
 }
 
 func (e *jsonEscaper) writeByteEscape(b byte) {
@@ -53,7 +54,7 @@ func (e *jsonEscaper) emitRaw(p []byte) {
 		return
 	}
 	if e.buf == nil {
-		e.buf = (*lineBufPool.Get().(*[]byte))[:0]
+		e.buf = (*LineBufPool.Get().(*[]byte))[:0]
 	}
 	if len(p) > cap(e.buf) {
 		e.flush()
@@ -107,7 +108,7 @@ func (e *jsonEscaper) Write(p []byte) (int, error) {
 			if b&0xC0 == 0x80 {
 				continue
 			}
-			if need := utf8SeqLen(b); need > 0 && i+need > n {
+			if need := Utf8SeqLen(b); need > 0 && i+need > n {
 				holdFrom = i
 			}
 			break
@@ -184,7 +185,7 @@ func (e *jsonEscaper) Close() error {
 	}
 	e.flush()
 	if e.buf != nil {
-		lineBufPool.Put(&e.buf)
+		LineBufPool.Put(&e.buf)
 		e.buf = nil
 	}
 	return e.err
@@ -228,12 +229,12 @@ func writeJSONRecord(w io.Writer, path string, head []byte, rest io.Reader) erro
 	if _, err := e.Write(head); err != nil {
 		return err
 	}
-	bufp := lineBufPool.Get().(*[]byte)
+	bufp := LineBufPool.Get().(*[]byte)
 	if _, err := io.CopyBuffer(e, rest, *bufp); err != nil {
-		lineBufPool.Put(bufp)
+		LineBufPool.Put(bufp)
 		return err
 	}
-	lineBufPool.Put(bufp)
+	LineBufPool.Put(bufp)
 	if err := e.Close(); err != nil {
 		return err
 	}

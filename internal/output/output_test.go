@@ -1,6 +1,6 @@
 // Tests for reading file content and for output helpers.
 
-package main
+package output
 
 import (
 	"os"

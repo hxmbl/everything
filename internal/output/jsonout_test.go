@@ -1,6 +1,6 @@
 // Tests for the streaming JSON escaper and the record writers.
 
-package main
+package output
 
 import (
 	"bytes"

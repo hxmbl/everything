@@ -1,7 +1,7 @@
 // Terminal detection via a termios ioctl, Linux flavour.
 //go:build linux
 
-package main
+package terminal
 
 import (
 	"os"

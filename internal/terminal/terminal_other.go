@@ -1,7 +1,7 @@
 // Terminal detection on platforms with no termios ioctl implementation here.
 //go:build !linux && !darwin
 
-package main
+package terminal
 
 import "os"
 

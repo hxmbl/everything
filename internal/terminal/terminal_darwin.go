@@ -1,7 +1,7 @@
 // Terminal detection via a termios ioctl, macOS flavour.
 //go:build darwin
 
-package main
+package terminal
 
 import (
 	"os"

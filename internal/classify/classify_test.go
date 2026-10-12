@@ -1,6 +1,6 @@
 // Tests for secret and binary classification.
 
-package main
+package classify
 
 import (
 	"strings"
@@ -58,8 +58,8 @@ func TestIsSecretFilename(t *testing.T) {
 		{"readme.md", false},
 	}
 	for _, c := range cases {
-		if got := isSecretFilename(c.name); got != c.skip {
-			t.Errorf("isSecretFilename(%q) = %v, want %v", c.name, got, c.skip)
+		if got := IsSecretFilename(c.name); got != c.skip {
+			t.Errorf("IsSecretFilename(%q) = %v, want %v", c.name, got, c.skip)
 		}
 	}
 }
@@ -161,8 +161,8 @@ func TestIsSecretFilenameSecretWordPrefixes(t *testing.T) {
 		{"auth.gpg", true},
 	}
 	for _, c := range cases {
-		if got := isSecretFilename(c.name); got != c.skip {
-			t.Errorf("isSecretFilename(%q) = %v, want %v", c.name, got, c.skip)
+		if got := IsSecretFilename(c.name); got != c.skip {
+			t.Errorf("IsSecretFilename(%q) = %v, want %v", c.name, got, c.skip)
 		}
 	}
 }
@@ -182,8 +182,8 @@ func TestSourceCodeExtsCannotOverlapSecretExts(t *testing.T) {
 		if secretDataExts[ext] {
 			t.Errorf("sourceCodeExts entry %q is also a secretDataExts value", ext)
 		}
-		if secretExtensions[ext] {
-			t.Errorf("sourceCodeExts entry %q is also a secretExtensions value", ext)
+		if SecretExtensions[ext] {
+			t.Errorf("sourceCodeExts entry %q is also a SecretExtensions value", ext)
 		}
 	}
 }
@@ -212,30 +212,30 @@ func TestHasPrivateKeyMarker(t *testing.T) {
 		{"marker beyond window", strings.Repeat("y", 5000) + key, false},
 	}
 	for _, c := range cases {
-		if got := hasPrivateKeyMarker([]byte(c.data)); got != c.want {
-			t.Errorf("hasPrivateKeyMarker(%q) = %v, want %v", c.name, got, c.want)
+		if got := HasPrivateKeyMarker([]byte(c.data)); got != c.want {
+			t.Errorf("HasPrivateKeyMarker(%q) = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
 
 func TestIsBinary(t *testing.T) {
-	if isBinary([]byte("plain text file\n")) {
+	if IsBinary([]byte("plain text file\n")) {
 		t.Error("text flagged as binary")
 	}
-	if !isBinary([]byte{0x7f, 'E', 'L', 'F', 0x00}) {
+	if !IsBinary([]byte{0x7f, 'E', 'L', 'F', 0x00}) {
 		t.Error("ELF not flagged")
 	}
-	if !isBinary([]byte("has\x00nul")) {
+	if !IsBinary([]byte("has\x00nul")) {
 		t.Error("NUL not flagged")
 	}
-	if isBinary([]byte{}) {
+	if IsBinary([]byte{}) {
 		t.Error("empty flagged as binary")
 	}
 	// Test magic bytes
-	if !isBinary([]byte{'P', 'K', 0x03, 0x04}) { // ZIP
+	if !IsBinary([]byte{'P', 'K', 0x03, 0x04}) { // ZIP
 		t.Error("ZIP not flagged")
 	}
-	if !isBinary([]byte{0x89, 'P', 'N', 'G'}) { // PNG
+	if !IsBinary([]byte{0x89, 'P', 'N', 'G'}) { // PNG
 		t.Error("PNG not flagged")
 	}
 	// Test control character density
@@ -243,7 +243,7 @@ func TestIsBinary(t *testing.T) {
 	for i := range controlHeavy {
 		controlHeavy[i] = 0x01
 	}
-	if !isBinary(controlHeavy) {
+	if !IsBinary(controlHeavy) {
 		t.Error("control-heavy data not flagged")
 	}
 }

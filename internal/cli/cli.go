@@ -1,6 +1,6 @@
 // Command-line parsing, flag validation, and help text.
 
-package main
+package cli
 
 import (
 	"fmt"
@@ -12,15 +12,26 @@ import (
 	"strings"
 
 	"github.com/alecthomas/chroma/v2/styles"
+
+	"github.com/hxmbl/everything/internal/classify"
+	"github.com/hxmbl/everything/internal/config"
+	"github.com/hxmbl/everything/internal/fs"
+	"github.com/hxmbl/everything/internal/ignore"
+	"github.com/hxmbl/everything/internal/terminal"
 )
 
-// validateConfig performs final validation on the parsed configuration.
+// Version is the tool version, printed by --version and by the benchmark
+// report. main sets it from its own version variable, which the release
+// pipeline overwrites with -X main.version.
+var Version string
+
+// ValidateConfig performs final validation on the parsed configuration.
 // It checks for conflicting options and invalid combinations.
-func validateConfig(cfg *Config) error {
+func ValidateConfig(cfg *config.Config) error {
 	// JSONL is a mode inside JSON mode, so --jsonl sets JSON as well and
 	// JSON&&JSONL cannot tell the two flags apart. Only an explicitly typed
 	// --json conflicts with --jsonl; on its own --jsonl is the common case.
-	if cfg.jsonExplicit && cfg.JSONL {
+	if cfg.JSONExplicit && cfg.JSONL {
 		return fmt.Errorf("--json and --jsonl are mutually exclusive")
 	}
 	if cfg.MaxSize < 0 {
@@ -35,22 +46,22 @@ func validateConfig(cfg *Config) error {
 	return nil
 }
 
-// parseArgs parses command-line arguments and returns a Config struct.
+// ParseArgs parses command-line arguments and returns a Config struct.
 // It handles all flags, validation, and default values.
-func parseArgs() *Config {
-	return parseArgsFrom(os.Args[1:])
+func ParseArgs() *config.Config {
+	return ParseArgsFrom(os.Args[1:])
 }
 
-// parseArgsFrom parses the given arguments (without the program name) and
-// returns a Config struct. It is the body of parseArgs, split out so tests
+// ParseArgsFrom parses the given arguments (without the program name) and
+// returns a Config struct. It is the body of ParseArgs, split out so tests
 // can exercise flag handling without reading os.Args.
-func parseArgsFrom(args []string) *Config {
-	cfg := &Config{
-		Exclude:           make(map[string]bool),
-		Include:           make(map[string]bool),
-		excludeAbsPaths:   make(map[string]bool),
-		IgnoreVenv:        true,
-		Warmup:            1,
+func ParseArgsFrom(args []string) *config.Config {
+	cfg := &config.Config{
+		Exclude:        make(map[string]bool),
+		Include:        make(map[string]bool),
+		ExcludeAbsPaths: make(map[string]bool),
+		IgnoreVenv:     true,
+		Warmup:         1,
 		OmittedDisclaimer: true,
 	}
 
@@ -59,9 +70,9 @@ func parseArgsFrom(args []string) *Config {
 			exe = resolved
 		}
 		if abs, absErr := filepath.Abs(exe); absErr == nil {
-			cfg.excludeAbsPaths[abs] = true
+			cfg.ExcludeAbsPaths[abs] = true
 			if fi, statErr := os.Stat(abs); statErr == nil {
-				cfg.exeInode = getInode(fi)
+				cfg.ExeInode = fs.GetInode(fi)
 			}
 		}
 	}
@@ -142,7 +153,7 @@ func parseArgsFrom(args []string) *Config {
 			}
 			cfg.Theme = args[i]
 			cfg.Color = true
-			if err := saveTheme(cfg.Theme); err != nil {
+			if err := config.SaveTheme(cfg.Theme); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: failed to save theme preference:", err)
 			}
 
@@ -155,14 +166,14 @@ func parseArgsFrom(args []string) *Config {
 		case "--color", "--highlight":
 			cfg.Color = true
 			colorExplicit = true
-			if err := saveColor(true); err != nil {
+			if err := config.SaveColor(true); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: failed to save color preference:", err)
 			}
 
 		case "--no-color":
 			cfg.Color = false
 			colorExplicit = true
-			if err := saveColor(false); err != nil {
+			if err := config.SaveColor(false); err != nil {
 				fmt.Fprintln(os.Stderr, "warning: failed to save color preference:", err)
 			}
 
@@ -174,7 +185,7 @@ func parseArgsFrom(args []string) *Config {
 
 		case "--json":
 			cfg.JSON = true
-			cfg.jsonExplicit = true
+			cfg.JSONExplicit = true
 
 		case "--jsonl":
 			cfg.JSON = true
@@ -223,7 +234,7 @@ func parseArgsFrom(args []string) *Config {
 				fmt.Fprintln(os.Stderr, "error: --max-size requires a size argument (e.g. 1MB, 500KB)")
 				os.Exit(1)
 			}
-			size, sizeErr := parseSize(args[i])
+			size, sizeErr := ParseSize(args[i])
 			if sizeErr != nil {
 				fmt.Fprintf(os.Stderr, "error: --max-size: %v\n", sizeErr)
 				os.Exit(1)
@@ -231,7 +242,7 @@ func parseArgsFrom(args []string) *Config {
 			cfg.MaxSize = size
 
 		case "--version", "-v":
-			fmt.Println("everything", version)
+			fmt.Println("everything", Version)
 			os.Exit(0)
 
 		case "--benchmark", "--bench":
@@ -273,17 +284,17 @@ func parseArgsFrom(args []string) *Config {
 		}
 	}
 
-	if err := validateConfig(cfg); err != nil {
+	if err := ValidateConfig(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
 
-	if !colorExplicit && cfg.OutputPath == "" && loadSavedColor() && isInteractive() {
+	if !colorExplicit && cfg.OutputPath == "" && config.LoadSavedColor() && terminal.IsInteractive() {
 		cfg.Color = true
 	}
 
 	if cfg.Color && cfg.Theme == "" {
-		if t := loadSavedTheme(); t != "" {
+		if t := config.LoadSavedTheme(); t != "" {
 			cfg.Theme = t
 		}
 		if cfg.Theme == "" {
@@ -405,11 +416,11 @@ Examples:
 // is listed on stderr after the scan; --no-omitted-disclaimer silences it.
 func printSkipHelp() {
 	fmt.Println("Skipped by default:")
-	fmt.Println("  dirs    ", strings.Join(defaultIgnoreDirs, " "))
-	fmt.Println("  files   ", strings.Join(defaultIgnoreFiles, " "))
+	fmt.Println("  dirs    ", strings.Join(ignore.DefaultIgnoreDirs, " "))
+	fmt.Println("  files   ", strings.Join(ignore.DefaultIgnoreFiles, " "))
 	fmt.Println("  also   .DS_Store, ._*")
-	fmt.Println("  venv    ", strings.Join(venvIgnoreDirs, " "), "(undo with --include-venv)")
-	fmt.Println("  exts   ", joinSorted(secretExtensions))
+	fmt.Println("  venv    ", strings.Join(ignore.VenvIgnoreDirs, " "), "(undo with --include-venv)")
+	fmt.Println("  exts   ", joinSorted(classify.SecretExtensions))
 	fmt.Println("  names  .env*, *.env, id_rsa*, id_ed25519*, id_dsa*, id_ecdsa*,")
 	fmt.Println("         credentials*, client_secret*, client-secret*,")
 	fmt.Println("         *service-account*.json, *service_account*.json, secrets.*,")
@@ -433,9 +444,9 @@ func joinSorted(set map[string]bool) string {
 	return strings.Join(keys, " ")
 }
 
-// parseSize parses a human-readable size string (e.g., "1MB", "500KB") into bytes.
+// ParseSize parses a human-readable size string (e.g., "1MB", "500KB") into bytes.
 // Returns an error if the format is invalid or the value overflows int64.
-func parseSize(s string) (int64, error) {
+func ParseSize(s string) (int64, error) {
 	s = strings.TrimSpace(strings.ToUpper(s))
 	if s == "" {
 		return 0, fmt.Errorf("empty size")

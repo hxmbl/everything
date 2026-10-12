@@ -1,12 +1,14 @@
 // Tests for the ignore lists and the unified skip decision.
 
-package main
+package ignore
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/hxmbl/everything/internal/config"
 )
 
 // fakeDirEntry is a minimal os.DirEntry for exercising shouldSkip without
@@ -28,21 +30,21 @@ func (f *fakeDirEntry) Info() (os.FileInfo, error) { return nil, os.ErrNotExist 
 // credentials cannot be rescued file by file, so this stays until the name
 // predicate learns whether it is looking at a directory.
 func TestShouldSkipSecretNamedDirectories(t *testing.T) {
-	cfg := &Config{
+	cfg := &config.Config{
 		Exclude:         map[string]bool{},
 		Include:         map[string]bool{},
-		excludeAbsPaths: map[string]bool{},
+		ExcludeAbsPaths: map[string]bool{},
 	}
 	dir := func(name string) os.DirEntry {
 		return &fakeDirEntry{name: name, isDir: true}
 	}
 
 	for _, name := range []string{"auth", "secrets", "credentials", "private", "aws", "tokens"} {
-		if !shouldSkip(filepath.Join("p", name), dir(name), cfg) {
+		if !ShouldSkip(filepath.Join("p", name), dir(name), cfg) {
 			t.Errorf("directory %q should still be skipped", name)
 		}
 	}
-	if shouldSkip(filepath.Join("p", "auth.go"), &fakeDirEntry{name: "auth.go"}, cfg) {
+	if ShouldSkip(filepath.Join("p", "auth.go"), &fakeDirEntry{name: "auth.go"}, cfg) {
 		t.Error("auth.go should not be skipped")
 	}
 }
@@ -157,7 +159,7 @@ func TestDefaultIgnoreDirSet(t *testing.T) {
 func TestVenvIgnoreDirsSeparated(t *testing.T) {
 	for _, name := range []string{".venv", "venv", "__pycache__", "node_modules"} {
 		if defaultIgnoreDirSet[name] {
-			t.Errorf("%q must not be in defaultIgnoreDirs; it belongs behind --ignore-venv", name)
+			t.Errorf("%q must not be in DefaultIgnoreDirs; it belongs behind --ignore-venv", name)
 		}
 		if !venvIgnoreDirSet[name] {
 			t.Errorf("venvIgnoreDirSet[%q] = false, want true", name)
@@ -191,8 +193,8 @@ func TestMatchesAnyPattern(t *testing.T) {
 		{"logs.txt", false},
 	}
 	for _, c := range cases {
-		if got := matchesAnyPattern(c.name, defaultIgnoreFiles); got != c.want {
-			t.Errorf("matchesAnyPattern(%q, defaultIgnoreFiles) = %v, want %v", c.name, got, c.want)
+		if got := matchesAnyPattern(c.name, DefaultIgnoreFiles); got != c.want {
+			t.Errorf("matchesAnyPattern(%q, DefaultIgnoreFiles) = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
@@ -203,17 +205,17 @@ func TestMatchesAnyPattern(t *testing.T) {
 // two have drifted again.
 func TestTreeIgnorePatternCoversEveryDefault(t *testing.T) {
 	re := treeIgnorePatternRe
-	for _, dir := range defaultIgnoreDirs {
+	for _, dir := range DefaultIgnoreDirs {
 		if !re.MatchString(dir) {
-			t.Errorf("defaultIgnoreDirs entry %q is missing from treeIgnorePattern", dir)
+			t.Errorf("DefaultIgnoreDirs entry %q is missing from treeIgnorePattern", dir)
 		}
 	}
-	for _, dir := range venvIgnoreDirs {
+	for _, dir := range VenvIgnoreDirs {
 		if !re.MatchString(dir) {
-			t.Errorf("venvIgnoreDirs entry %q is missing from treeIgnorePattern", dir)
+			t.Errorf("VenvIgnoreDirs entry %q is missing from treeIgnorePattern", dir)
 		}
 	}
-	for _, glob := range append(defaultIgnoreFiles, treeSecretPatterns...) {
+	for _, glob := range append(DefaultIgnoreFiles, treeSecretPatterns...) {
 		if !re.MatchString(glob) {
 			t.Errorf("file pattern %q is missing from treeIgnorePattern", glob)
 		}
@@ -228,19 +230,19 @@ func TestTreeIgnorePatternCoversEveryDefault(t *testing.T) {
 // `tree -I` safe: `tree -I` matches one path component at a time, so an entry
 // is only well behaved if it is a literal name with no glob metacharacter.
 // "bin" then spares combine.go and binary_packer.go, and ".build" does not
-// drag in ".builds". Entries needing a glob belong in defaultIgnoreFiles,
+// drag in ".builds". Entries needing a glob belong in DefaultIgnoreFiles,
 // where matchesAnyPattern applies them to the base name deliberately.
 func TestDefaultIgnoreDirsAreLiteralComponents(t *testing.T) {
-	for _, dir := range append(append([]string{}, defaultIgnoreDirs...), venvIgnoreDirs...) {
+	for _, dir := range append(append([]string{}, DefaultIgnoreDirs...), VenvIgnoreDirs...) {
 		if strings.ContainsAny(dir, "*?[]") {
-			t.Errorf("defaultIgnoreDirs entry %q contains a glob metacharacter; "+
+			t.Errorf("DefaultIgnoreDirs entry %q contains a glob metacharacter; "+
 				"tree -I would apply it as a pattern, not a literal name", dir)
 		}
 		if dir == "" {
-			t.Error("empty entry in defaultIgnoreDirs")
+			t.Error("empty entry in DefaultIgnoreDirs")
 		}
 		if strings.ContainsAny(dir, `/\`) {
-			t.Errorf("defaultIgnoreDirs entry %q contains a separator; entries are single components", dir)
+			t.Errorf("DefaultIgnoreDirs entry %q contains a separator; entries are single components", dir)
 		}
 	}
 }
@@ -249,15 +251,15 @@ func TestDefaultIgnoreDirsAreLiteralComponents(t *testing.T) {
 // a repeated entry is harmless to matching but signals a list that has drifted.
 func TestDefaultIgnoreDirsHaveNoDuplicates(t *testing.T) {
 	seen := map[string]bool{}
-	for _, dir := range append(append([]string{}, defaultIgnoreDirs...), venvIgnoreDirs...) {
+	for _, dir := range append(append([]string{}, DefaultIgnoreDirs...), VenvIgnoreDirs...) {
 		if seen[dir] {
 			t.Errorf("duplicate entry %q in ignore dir lists", dir)
 		}
 		seen[dir] = true
 	}
-	for _, dir := range defaultIgnoreDirs {
+	for _, dir := range DefaultIgnoreDirs {
 		if venvIgnoreDirSet[dir] {
-			t.Errorf("%q appears in both defaultIgnoreDirs and venvIgnoreDirs", dir)
+			t.Errorf("%q appears in both DefaultIgnoreDirs and VenvIgnoreDirs", dir)
 		}
 	}
 }
@@ -266,11 +268,11 @@ func TestDefaultIgnoreDirsHaveNoDuplicates(t *testing.T) {
 // --include, and --include lifts a default. This is what makes it safe to widen
 // the defaults, because a caller can always get a directory back.
 func TestShouldSkipPrecedence(t *testing.T) {
-	base := func() *Config {
-		return &Config{
+	base := func() *config.Config {
+		return &config.Config{
 			Exclude:         map[string]bool{},
 			Include:         map[string]bool{},
-			excludeAbsPaths: map[string]bool{},
+			ExcludeAbsPaths: map[string]bool{},
 			IgnoreVenv:      true,
 		}
 	}
@@ -280,14 +282,14 @@ func TestShouldSkipPrecedence(t *testing.T) {
 
 	// default: skipped
 	cfg := base()
-	if !shouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
+	if !ShouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
 		t.Error("default: .build should be skipped")
 	}
 
 	// --include lifts the default
 	cfg = base()
 	cfg.Include[".build"] = true
-	if shouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
+	if ShouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
 		t.Error("--include should re-enable .build")
 	}
 
@@ -295,26 +297,26 @@ func TestShouldSkipPrecedence(t *testing.T) {
 	cfg = base()
 	cfg.Include[".build"] = true
 	cfg.Exclude[".build"] = true
-	if !shouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
+	if !ShouldSkip(filepath.Join("p", ".build"), dir(".build"), cfg) {
 		t.Error("--exclude must win over --include")
 	}
 
 	// venv dirs remain reversible via --include-venv, and also via --include
 	cfg = base()
 	cfg.IgnoreVenv = false
-	if shouldSkip(filepath.Join("p", "node_modules"), dir("node_modules"), cfg) {
+	if ShouldSkip(filepath.Join("p", "node_modules"), dir("node_modules"), cfg) {
 		t.Error("--include-venv should re-enable node_modules")
 	}
 	cfg = base()
 	cfg.Include["node_modules"] = true
-	if shouldSkip(filepath.Join("p", "node_modules"), dir("node_modules"), cfg) {
+	if ShouldSkip(filepath.Join("p", "node_modules"), dir("node_modules"), cfg) {
 		t.Error("--include should re-enable node_modules")
 	}
 
 	// real source is never skipped by the new defaults
 	cfg = base()
 	for _, keep := range []string{"src", "test", "docs", "buildSrc"} {
-		if shouldSkip(filepath.Join("p", keep), dir(keep), cfg) {
+		if ShouldSkip(filepath.Join("p", keep), dir(keep), cfg) {
 			t.Errorf("%q should not be skipped", keep)
 		}
 	}

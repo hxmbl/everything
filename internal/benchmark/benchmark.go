@@ -1,7 +1,7 @@
 // Benchmark mode (--benchmark). A separate traversal that measures rather
 // than emits; main dispatches here and exits before the dump path runs.
 
-package main
+package benchmark
 
 import (
 	"fmt"
@@ -16,11 +16,17 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
+
+	"github.com/hxmbl/everything/internal/classify"
+	"github.com/hxmbl/everything/internal/config"
+	"github.com/hxmbl/everything/internal/ignore"
+	"github.com/hxmbl/everything/internal/output"
 )
 
-// runBenchmark executes a benchmark traversal of the configured directories.
-// It measures file counts, sizes, lines of code, and traversal speed across multiple runs.
-func runBenchmark(cfg *Config) {
+// RunBenchmark executes a benchmark traversal of the configured directories.
+// It measures file counts, sizes, lines of code, and traversal speed across
+// multiple runs. version is printed with the report.
+func RunBenchmark(cfg *config.Config, version string) {
 	walkDirs := cfg.InputDirs
 	if len(walkDirs) == 0 {
 		walkDirs = []string{"."}
@@ -155,14 +161,14 @@ func runBenchmark(cfg *Config) {
 
 // benchTraverse performs a single benchmark traversal, counting files, directories, bytes, lines, and characters.
 // It applies the same filtering as a real dump but doesn't write output.
-func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, bytesRead, lines, chars int64) {
+func benchTraverse(cfg *config.Config, walkDirs []string) (files, dirs, totalBytes, bytesRead, lines, chars int64) {
 	for _, root := range walkDirs {
 		filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
 
-			if shouldSkip(path, d, cfg) {
+			if ignore.ShouldSkip(path, d, cfg) {
 				if d.IsDir() {
 					return filepath.SkipDir
 				}
@@ -205,28 +211,28 @@ func benchTraverse(cfg *Config, walkDirs []string) (files, dirs, totalBytes, byt
 			}
 			defer f.Close()
 
-			peekp := peekPool.Get().(*[]byte)
+			peekp := output.PeekPool.Get().(*[]byte)
 			peek := *peekp
 			n, err := io.ReadFull(f, peek)
 			if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-				peekPool.Put(peekp)
+				output.PeekPool.Put(peekp)
 				return nil
 			}
 			peek = peek[:n]
 			bytesRead += int64(n)
 
-			if !cfg.IncludeBinaries && isBinary(peek) {
-				peekPool.Put(peekp)
+			if !cfg.IncludeBinaries && classify.IsBinary(peek) {
+				output.PeekPool.Put(peekp)
 				return nil
 			}
 
-			if hasPrivateKeyMarker(peek) {
-				peekPool.Put(peekp)
+			if classify.HasPrivateKeyMarker(peek) {
+				output.PeekPool.Put(peekp)
 				return nil
 			}
 
 			fileLines, fileChars, contentBytes := countLinesAndChars(f, peek)
-			peekPool.Put(peekp)
+			output.PeekPool.Put(peekp)
 
 			files++
 			totalBytes += info.Size()
@@ -252,7 +258,7 @@ func utf8RuneCountCarry(b []byte) (int64, int) {
 		i--
 	}
 	if i >= 0 {
-		if need := utf8SeqLen(b[i]); need > 1 {
+		if need := output.Utf8SeqLen(b[i]); need > 1 {
 			if avail := n - i; avail < need {
 				keep = avail
 			}
@@ -270,9 +276,9 @@ func utf8RuneCountCarry(b []byte) (int64, int) {
 // is accounted for by the caller). Line counting mirrors the dump's trailing
 // newline semantics: a file not ending in '\n' gets one more line.
 func countLinesAndChars(f *os.File, head []byte) (lines, chars, contentBytes int64) {
-	bufp := lineBufPool.Get().(*[]byte)
+	bufp := output.LineBufPool.Get().(*[]byte)
 	buf := *bufp
-	defer lineBufPool.Put(bufp)
+	defer output.LineBufPool.Put(bufp)
 
 	n := copy(buf, head)
 

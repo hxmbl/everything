@@ -1,7 +1,7 @@
 // Deciding whether a file is a secret or a binary, from its name and its head
 // bytes. Pure functions: no Config, no I/O.
 
-package main
+package classify
 
 import (
 	"bytes"
@@ -13,12 +13,16 @@ import (
 // SECRETS GUARD
 //
 
-var secretExtensions = map[string]bool{
+// SecretExtensions are credential formats that are always skipped, whatever
+// their name. Exporting the map lets the CLI help and the ignore rules read
+// the same list the scanner uses.
+var SecretExtensions = map[string]bool{
 	".pem": true, ".key": true, ".p12": true, ".pfx": true, ".jks": true,
 	".keystore": true, ".jceks": true, ".kdbx": true, ".crt": true, ".cer": true,
 	".der": true, ".csr": true, ".asc": true, ".gpg": true, ".pgp": true,
 }
 
+// secretDataExts are structured data formats that can hold live credentials.
 var secretDataExts = map[string]bool{
 	".json": true, ".yaml": true, ".yml": true, ".toml": true, ".ini": true,
 	".conf": true, ".cfg": true, ".txt": true, ".properties": true,
@@ -86,9 +90,9 @@ var binaryMagics = [][]byte{
 	{0xcf, 0xfa, 0xed, 0xfe},
 }
 
-// isSecretFilename checks if a filename matches known secret file patterns.
+// IsSecretFilename checks if a filename matches known secret file patterns.
 // This includes environment files, SSH keys, certificates, and credential files.
-func isSecretFilename(name string) bool {
+func IsSecretFilename(name string) bool {
 	lower := strings.ToLower(name)
 
 	if strings.HasPrefix(lower, ".env") || strings.Contains(lower, ".env.") ||
@@ -135,7 +139,7 @@ func isSecretFilename(name string) bool {
 		return true
 	}
 
-	if secretExtensions[ext] {
+	if SecretExtensions[ext] {
 		return true
 	}
 
@@ -145,9 +149,9 @@ func isSecretFilename(name string) bool {
 var pemBeginMarker = []byte("-----BEGIN")
 var pemPrivateKeyMarker = []byte("PRIVATE KEY")
 
-// hasPrivateKeyMarker checks if data contains a PEM private key block.
+// HasPrivateKeyMarker checks if data contains a PEM private key block.
 // It looks for "-----BEGIN" followed by "PRIVATE KEY" within the first 4KB.
-func hasPrivateKeyMarker(data []byte) bool {
+func HasPrivateKeyMarker(data []byte) bool {
 	n := len(data)
 	if n > 4096 {
 		n = 4096
@@ -172,9 +176,9 @@ func hasMagic(peek, magic []byte) bool {
 	return true
 }
 
-// isBinary checks if the file content appears to be binary based on magic bytes and control character density.
+// IsBinary checks if the file content appears to be binary based on magic bytes and control character density.
 // Returns true if the content matches known binary signatures or has too many control characters.
-func isBinary(peek []byte) bool {
+func IsBinary(peek []byte) bool {
 	for _, m := range binaryMagics {
 		if len(peek) >= len(m) && hasMagic(peek, m) {
 			return true

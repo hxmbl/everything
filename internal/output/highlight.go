@@ -1,6 +1,6 @@
 // Optional chroma syntax highlighting for --color.
 
-package main
+package output
 
 import (
 	"io"

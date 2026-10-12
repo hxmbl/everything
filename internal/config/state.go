@@ -1,7 +1,7 @@
 // Persisted user preferences (color on/off, theme name), stored under the
 // user cache dir so a flag sticks across runs.
 
-package main
+package config
 
 import (
 	"os"
@@ -18,9 +18,9 @@ func colorCachePath() string {
 	return filepath.Join(cacheDir, "everything", "color")
 }
 
-// loadSavedColor loads the saved color preference from the cache file.
+// LoadSavedColor loads the saved color preference from the cache file.
 // Returns false if the file doesn't exist or cannot be read.
-func loadSavedColor() bool {
+func LoadSavedColor() bool {
 	data, err := os.ReadFile(colorCachePath())
 	if err != nil {
 		return false
@@ -28,9 +28,9 @@ func loadSavedColor() bool {
 	return strings.TrimSpace(string(data)) == "true"
 }
 
-// saveColor saves the color preference to the cache file.
+// SaveColor saves the color preference to the cache file.
 // Returns an error if the cache directory cannot be created or the file cannot be written.
-func saveColor(on bool) error {
+func SaveColor(on bool) error {
 	path := colorCachePath()
 	if path == "" {
 		return nil
@@ -54,9 +54,9 @@ func themeCachePath() string {
 	return filepath.Join(cacheDir, "everything", "theme")
 }
 
-// loadSavedTheme loads the saved theme preference from the cache file.
+// LoadSavedTheme loads the saved theme preference from the cache file.
 // Returns an empty string if the file doesn't exist or cannot be read.
-func loadSavedTheme() string {
+func LoadSavedTheme() string {
 	data, err := os.ReadFile(themeCachePath())
 	if err != nil {
 		return ""
@@ -64,9 +64,9 @@ func loadSavedTheme() string {
 	return strings.TrimSpace(string(data))
 }
 
-// saveTheme saves the theme preference to the cache file.
+// SaveTheme saves the theme preference to the cache file.
 // Returns an error if the cache directory cannot be created or the file cannot be written.
-func saveTheme(name string) error {
+func SaveTheme(name string) error {
 	path := themeCachePath()
 	if path == "" {
 		return nil

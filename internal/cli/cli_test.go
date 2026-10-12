@@ -1,6 +1,6 @@
 // Tests for command-line parsing, flag validation, and help output.
 
-package main
+package cli
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/hxmbl/everything/internal/config"
 )
 
 func TestParseSize(t *testing.T) {
@@ -32,25 +34,25 @@ func TestParseSize(t *testing.T) {
 		{"", 0, true},
 	}
 	for _, c := range cases {
-		got, err := parseSize(c.in)
+		got, err := ParseSize(c.in)
 		if c.wantErr {
 			if err == nil {
-				t.Errorf("parseSize(%q) = %d, want error", c.in, got)
+				t.Errorf("ParseSize(%q) = %d, want error", c.in, got)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("parseSize(%q) unexpected error: %v", c.in, err)
+			t.Errorf("ParseSize(%q) unexpected error: %v", c.in, err)
 			continue
 		}
 		if got != c.want {
-			t.Errorf("parseSize(%q) = %d, want %d", c.in, got, c.want)
+			t.Errorf("ParseSize(%q) = %d, want %d", c.in, got, c.want)
 		}
 	}
 
-	over, err := parseSize("9223372036854775807TB")
+	over, err := ParseSize("9223372036854775807TB")
 	if err == nil || over != 0 {
-		t.Errorf("parseSize overflow: got (%d, %v), want error", over, err)
+		t.Errorf("ParseSize overflow: got (%d, %v), want error", over, err)
 	}
 }
 
@@ -71,17 +73,17 @@ func TestParseSizeEdgeCases(t *testing.T) {
 		{"  ", 0, true},
 	}
 	for _, c := range cases {
-		got, err := parseSize(c.in)
+		got, err := ParseSize(c.in)
 		if c.wantErr {
 			if err == nil {
-				t.Errorf("parseSize(%q) expected error, got %d", c.in, got)
+				t.Errorf("ParseSize(%q) expected error, got %d", c.in, got)
 			}
 		} else {
 			if err != nil {
-				t.Errorf("parseSize(%q) unexpected error: %v", c.in, err)
+				t.Errorf("ParseSize(%q) unexpected error: %v", c.in, err)
 			}
 			if got != c.want {
-				t.Errorf("parseSize(%q) = %d, want %d", c.in, got, c.want)
+				t.Errorf("ParseSize(%q) = %d, want %d", c.in, got, c.want)
 			}
 		}
 	}
@@ -90,24 +92,24 @@ func TestParseSizeEdgeCases(t *testing.T) {
 func TestValidateConfig(t *testing.T) {
 	cases := []struct {
 		name    string
-		cfg     *Config
+		cfg     *config.Config
 		wantErr bool
 	}{
-		{"valid config", &Config{}, false},
+		{"valid config", &config.Config{}, false},
 		// --jsonl sets JSON too, so this is the state --jsonl produces and it
 		// must validate. Only an explicitly typed --json conflicts with it.
-		{"jsonl alone", &Config{JSON: true, JSONL: true}, false},
-		{"json alone", &Config{JSON: true}, false},
-		{"json and jsonl conflict", &Config{JSON: true, JSONL: true, jsonExplicit: true}, true},
-		{"negative max size", &Config{MaxSize: -1}, true},
-		{"runs too high", &Config{Runs: 10001}, true},
-		{"runs negative", &Config{Runs: -1}, true},
-		{"warmup too high", &Config{Warmup: 10001}, true},
-		{"warmup negative", &Config{Warmup: -1}, true},
-		{"valid bounds", &Config{Runs: 5, Warmup: 2, MaxSize: 1000}, false},
+		{"jsonl alone", &config.Config{JSON: true, JSONL: true}, false},
+		{"json alone", &config.Config{JSON: true}, false},
+		{"json and jsonl conflict", &config.Config{JSON: true, JSONL: true, JSONExplicit: true}, true},
+		{"negative max size", &config.Config{MaxSize: -1}, true},
+		{"runs too high", &config.Config{Runs: 10001}, true},
+		{"runs negative", &config.Config{Runs: -1}, true},
+		{"warmup too high", &config.Config{Warmup: 10001}, true},
+		{"warmup negative", &config.Config{Warmup: -1}, true},
+		{"valid bounds", &config.Config{Runs: 5, Warmup: 2, MaxSize: 1000}, false},
 	}
 	for _, c := range cases {
-		err := validateConfig(c.cfg)
+		err := ValidateConfig(c.cfg)
 		if c.wantErr && err == nil {
 			t.Errorf("%s: expected error, got nil", c.name)
 		}
@@ -149,7 +151,7 @@ func captureStderr(t *testing.T, fn func()) string {
 }
 
 func TestParseArgsDefaults(t *testing.T) {
-	cfg := parseArgsFrom(nil)
+	cfg := ParseArgsFrom(nil)
 	if !cfg.OmittedDisclaimer {
 		t.Error("OmittedDisclaimer = false, want true (default-on)")
 	}
@@ -165,8 +167,8 @@ func TestParseArgsDefaults(t *testing.T) {
 	if cfg.InputDirs != nil {
 		t.Errorf("InputDirs = %v, want nil", cfg.InputDirs)
 	}
-	if cfg.Exclude == nil || cfg.Include == nil || cfg.excludeAbsPaths == nil {
-		t.Error("expected the Exclude, Include, and excludeAbsPaths maps to be initialized")
+	if cfg.Exclude == nil || cfg.Include == nil || cfg.ExcludeAbsPaths == nil {
+		t.Error("expected the Exclude, Include, and ExcludeAbsPaths maps to be initialized")
 	}
 }
 
@@ -183,8 +185,8 @@ func TestParseArgsOmittedDisclaimer(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var cfg *Config
-			captureStderr(t, func() { cfg = parseArgsFrom(c.args) })
+			var cfg *config.Config
+			captureStderr(t, func() { cfg = ParseArgsFrom(c.args) })
 			if cfg.OmittedDisclaimer != c.want {
 				t.Errorf("OmittedDisclaimer = %v, want %v", cfg.OmittedDisclaimer, c.want)
 			}
@@ -195,7 +197,7 @@ func TestParseArgsOmittedDisclaimer(t *testing.T) {
 func TestParseArgsNoOmittedDisclaimerTakesNoValue(t *testing.T) {
 	// The flag must be registered as a no-argument flag, otherwise the next
 	// argument is swallowed as its value.
-	cfg := parseArgsFrom([]string{"--no-omitted-disclaimer", "--json", "--max-size", "1MB"})
+	cfg := ParseArgsFrom([]string{"--no-omitted-disclaimer", "--json", "--max-size", "1MB"})
 	if cfg.OmittedDisclaimer {
 		t.Error("OmittedDisclaimer = true, want false")
 	}
@@ -208,8 +210,8 @@ func TestParseArgsNoOmittedDisclaimerTakesNoValue(t *testing.T) {
 }
 
 func TestOmittedDisclaimerAliasWarns(t *testing.T) {
-	var cfg *Config
-	out := captureStderr(t, func() { cfg = parseArgsFrom([]string{"--omitted-disclaimer"}) })
+	var cfg *config.Config
+	out := captureStderr(t, func() { cfg = ParseArgsFrom([]string{"--omitted-disclaimer"}) })
 	if !cfg.OmittedDisclaimer {
 		t.Error("OmittedDisclaimer = false, want true")
 	}
@@ -220,7 +222,7 @@ func TestOmittedDisclaimerAliasWarns(t *testing.T) {
 
 func TestNoOmittedDisclaimerIsSilent(t *testing.T) {
 	// Nothing may be persisted or warned about: the opt-out is per-invocation.
-	out := captureStderr(t, func() { parseArgsFrom([]string{"--no-omitted-disclaimer"}) })
+	out := captureStderr(t, func() { ParseArgsFrom([]string{"--no-omitted-disclaimer"}) })
 	if out != "" {
 		t.Errorf("got stderr output %q, want none", out)
 	}
@@ -228,7 +230,7 @@ func TestNoOmittedDisclaimerIsSilent(t *testing.T) {
 
 func TestParseArgsFlags(t *testing.T) {
 	dir := t.TempDir()
-	cfg := parseArgsFrom([]string{"--json", "--exclude", "vendor,tmp", "--output", "out.txt", dir})
+	cfg := ParseArgsFrom([]string{"--json", "--exclude", "vendor,tmp", "--output", "out.txt", dir})
 	if !cfg.JSON || cfg.JSONL {
 		t.Errorf("JSON = %v, JSONL = %v, want true/false", cfg.JSON, cfg.JSONL)
 	}
@@ -244,7 +246,7 @@ func TestParseArgsFlags(t *testing.T) {
 }
 
 func TestParseArgsAliases(t *testing.T) {
-	cfg := parseArgsFrom([]string{"--overwrite", "--ignore", "a,b", "--include-binary"})
+	cfg := ParseArgsFrom([]string{"--overwrite", "--ignore", "a,b", "--include-binary"})
 	if !cfg.Force {
 		t.Error("--overwrite did not set Force")
 	}
@@ -257,21 +259,21 @@ func TestParseArgsAliases(t *testing.T) {
 }
 
 func TestParseArgsJSON(t *testing.T) {
-	cfg := parseArgsFrom([]string{"--json"})
+	cfg := ParseArgsFrom([]string{"--json"})
 	if !cfg.JSON || cfg.JSONL {
 		t.Errorf("JSON = %v, JSONL = %v, want true/false", cfg.JSON, cfg.JSONL)
 	}
-	if !cfg.jsonExplicit {
-		t.Error("jsonExplicit = false, want true (--json was typed)")
+	if !cfg.JSONExplicit {
+		t.Error("JSONExplicit = false, want true (--json was typed)")
 	}
 }
 
 func TestParseArgsJSONL(t *testing.T) {
-	cfg := parseArgsFrom([]string{"--jsonl"})
+	cfg := ParseArgsFrom([]string{"--jsonl"})
 	if !cfg.JSON || !cfg.JSONL {
 		t.Errorf("JSON = %v, JSONL = %v, want true/true", cfg.JSON, cfg.JSONL)
 	}
-	if cfg.jsonExplicit {
-		t.Error("jsonExplicit = true, want false (--json was not typed)")
+	if cfg.JSONExplicit {
+		t.Error("JSONExplicit = true, want false (--json was not typed)")
 	}
 }

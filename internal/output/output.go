@@ -1,6 +1,6 @@
 // Writing a file's bytes to the output, and opening the output safely.
 
-package main
+package output
 
 import (
 	"bufio"
@@ -9,6 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/hxmbl/everything/internal/classify"
+	"github.com/hxmbl/everything/internal/config"
+	"github.com/hxmbl/everything/internal/fs"
 )
 
 // peekSize is how many leading bytes every file is read before being
@@ -16,15 +20,15 @@ import (
 const peekSize = 8192
 
 var (
-	// peekPool holds the per-file head buffers used by processFile and by
+	// PeekPool holds the per-file head buffers used by ProcessFile and by
 	// benchTraverse.
-	peekPool = sync.Pool{New: func() any {
+	PeekPool = sync.Pool{New: func() any {
 		b := make([]byte, peekSize)
 		return &b
 	}}
-	// lineBufPool holds the streaming copy buffers shared by copyRest,
-	// countLinesAndChars, and writeJSONRecord.
-	lineBufPool = sync.Pool{New: func() any {
+	// LineBufPool holds the streaming copy buffers shared by copyRest,
+	// countLinesAndChars, and WriteJSONRecord.
+	LineBufPool = sync.Pool{New: func() any {
 		b := make([]byte, 64*1024)
 		return &b
 	}}
@@ -34,13 +38,13 @@ var (
 // FILE EMISSION
 //
 
-// getFileInfo retrieves file information, handling symlinks and special files.
+// GetFileInfo retrieves file information, handling symlinks and special files.
 // Returns nil if the file should be skipped.
-func getFileInfo(path string, d os.DirEntry, cfg *Config) (os.FileInfo, error) {
+func GetFileInfo(path string, d os.DirEntry, cfg *config.Config) (os.FileInfo, error) {
 	var info os.FileInfo
 	if d.Type()&os.ModeSymlink != 0 {
 		if !cfg.FollowSymlinks {
-			cfg.recordSkip(fmt.Sprintf("  symlink: %s", path))
+			cfg.RecordSkip(fmt.Sprintf("  symlink: %s", path))
 			return nil, nil
 		}
 		target, statErr := os.Stat(path)
@@ -48,7 +52,7 @@ func getFileInfo(path string, d os.DirEntry, cfg *Config) (os.FileInfo, error) {
 			return nil, nil
 		}
 		if target.IsDir() {
-			cfg.recordSkip(fmt.Sprintf("  dir symlink: %s", path))
+			cfg.RecordSkip(fmt.Sprintf("  dir symlink: %s", path))
 			return nil, nil
 		}
 		if !target.Mode().IsRegular() {
@@ -68,33 +72,33 @@ func getFileInfo(path string, d os.DirEntry, cfg *Config) (os.FileInfo, error) {
 	return info, nil
 }
 
-// processFile handles the actual file reading and writing based on configuration.
+// ProcessFile handles the actual file reading and writing based on configuration.
 // It manages JSON output, syntax highlighting, and error handling.
-func processFile(path string, info os.FileInfo, writer io.Writer, cfg *Config, jsonArray bool, jsonSeparator func(), jsonClose func()) error {
+func ProcessFile(path string, info os.FileInfo, writer io.Writer, cfg *config.Config, jsonArray bool, jsonSeparator func(), jsonClose func()) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
 
-	peekp := peekPool.Get().(*[]byte)
+	peekp := PeekPool.Get().(*[]byte)
 	peek := *peekp
 	n, err := io.ReadFull(f, peek)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		peekPool.Put(peekp)
+		PeekPool.Put(peekp)
 		return nil
 	}
 	peek = peek[:n]
 
-	if !cfg.IncludeBinaries && isBinary(peek) {
-		peekPool.Put(peekp)
-		cfg.recordSkip(fmt.Sprintf("  binary: %s", path))
+	if !cfg.IncludeBinaries && classify.IsBinary(peek) {
+		PeekPool.Put(peekp)
+		cfg.RecordSkip(fmt.Sprintf("  binary: %s", path))
 		return nil
 	}
 
-	if hasPrivateKeyMarker(peek) {
-		peekPool.Put(peekp)
-		cfg.recordSkip(fmt.Sprintf("  secret: %s", path))
+	if classify.HasPrivateKeyMarker(peek) {
+		PeekPool.Put(peekp)
+		cfg.RecordSkip(fmt.Sprintf("  secret: %s", path))
 		return nil
 	}
 
@@ -105,48 +109,48 @@ func processFile(path string, info os.FileInfo, writer io.Writer, cfg *Config, j
 		jsonSeparator()
 		if jsonArray {
 			if err := writeJSONRecord(writer, path, peek, f); err != nil {
-				cfg.recordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
+				cfg.RecordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
 			}
 		} else {
 			if err := writeJSONLine(writer, path, peek, f); err != nil {
-				cfg.recordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
+				cfg.RecordSkip(fmt.Sprintf("  json error: %s: %v", path, err))
 			}
 		}
 	} else {
 		if _, err := fmt.Fprintf(writer, "==== FILE: %s ====\n", path); err != nil {
-			cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+			cfg.RecordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
 		}
 		if useHighlight {
 			data, err := readWholeFile(peek, f)
 			if err != nil {
-				cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
+				cfg.RecordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
 				if _, writeErr := writer.Write(peek); writeErr != nil {
-					cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
+					cfg.RecordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
 				}
 				if copyErr := copyRest(writer, f); copyErr != nil {
-					cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, copyErr))
+					cfg.RecordSkip(fmt.Sprintf("  read error: %s: %v", path, copyErr))
 				}
 			} else {
 				if err := emitHighlighted(writer, path, data, cfg.Theme); err != nil {
-					cfg.recordSkip(fmt.Sprintf("  highlight error: %s: %v", path, err))
+					cfg.RecordSkip(fmt.Sprintf("  highlight error: %s: %v", path, err))
 					if _, writeErr := writer.Write(data); writeErr != nil {
-						cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
+						cfg.RecordSkip(fmt.Sprintf("  write error: %s: %v", path, writeErr))
 					}
 				}
 			}
 		} else {
 			if _, err := writer.Write(peek); err != nil {
-				cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+				cfg.RecordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
 			}
 			if err := copyRest(writer, f); err != nil {
-				cfg.recordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
+				cfg.RecordSkip(fmt.Sprintf("  read error: %s: %v", path, err))
 			}
 		}
 		if _, err := writer.Write([]byte("\n\n")); err != nil {
-			cfg.recordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
+			cfg.RecordSkip(fmt.Sprintf("  write error: %s: %v", path, err))
 		}
 	}
-	peekPool.Put(peekp)
+	PeekPool.Put(peekp)
 	return nil
 }
 
@@ -166,12 +170,12 @@ func validateOutputPath(path string) error {
 	return nil
 }
 
-// setupOutput configures the output writer based on the configuration.
+// SetupOutput configures the output writer based on the configuration.
 // Returns the writer and a cleanup function that should be called when done.
-func setupOutput(cfg *Config) (io.Writer, func() error) {
+func SetupOutput(cfg *config.Config) (io.Writer, func() error) {
 	if cfg.OutputPath == "" {
 		if fi, err := os.Stdout.Stat(); err == nil {
-			cfg.stdoutInode = getInode(fi)
+			cfg.StdoutInode = fs.GetInode(fi)
 		}
 		return os.Stdout, func() error { return nil }
 	}
@@ -183,7 +187,7 @@ func setupOutput(cfg *Config) (io.Writer, func() error) {
 		os.Exit(1)
 	}
 
-	cfg.excludeAbsPaths[absOut] = true
+	cfg.ExcludeAbsPaths[absOut] = true
 
 	if fi, lstatErr := os.Lstat(cfg.OutputPath); lstatErr == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
@@ -196,14 +200,14 @@ func setupOutput(cfg *Config) (io.Writer, func() error) {
 		}
 	}
 
-	f, err := os.OpenFile(cfg.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|outputNoFollow, 0o666)
+	f, err := os.OpenFile(cfg.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|fs.OutputNoFollow, 0o666)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot write output file %q: %v\n", cfg.OutputPath, err)
 		os.Exit(1)
 	}
 
 	if fi, statErr := f.Stat(); statErr == nil {
-		cfg.outputInode = getInode(fi)
+		cfg.OutputInode = fs.GetInode(fi)
 	}
 
 	bw := bufio.NewWriterSize(f, 256*1024)
@@ -224,9 +228,9 @@ func setupOutput(cfg *Config) (io.Writer, func() error) {
 // copyRest copies the remaining content from reader to writer using a pooled buffer.
 // Returns any error that occurs during the copy operation.
 func copyRest(w io.Writer, r io.Reader) error {
-	bufp := lineBufPool.Get().(*[]byte)
+	bufp := LineBufPool.Get().(*[]byte)
 	_, err := io.CopyBuffer(w, r, *bufp)
-	lineBufPool.Put(bufp)
+	LineBufPool.Put(bufp)
 	return err
 }
 

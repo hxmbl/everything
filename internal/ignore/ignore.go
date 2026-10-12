@@ -1,7 +1,7 @@
 // What gets left out of a dump: the generated/dependency directory lists, the
 // user-facing skip decision, and the `tree` renderer that has to agree with it.
 
-package main
+package ignore
 
 import (
 	"bufio"
@@ -13,20 +13,24 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/hxmbl/everything/internal/classify"
+	"github.com/hxmbl/everything/internal/config"
+	"github.com/hxmbl/everything/internal/fs"
 )
 
 // IGNORE PATTERNS
 //
-// defaultIgnoreDirs is the single source of truth for directory names that are
+// DefaultIgnoreDirs is the single source of truth for directory names that are
 // generated, cached, vendored, or otherwise not hand-written. It is consulted
-// by shouldSkip and, through treeIgnorePattern, by the `tree` renderer, so the
+// by ShouldSkip and, through treeIgnorePattern, by the `tree` renderer, so the
 // two share one list rather than a hand-copied regex. They still disagree
 // under --include, which lifts a default for the walker but not for the
 // banner; see treeIgnorePattern.
 //
 // Every entry is matched against a single path component (the directory's own
 // name), never a substring, so "bin" does not swallow "combine.go".
-var defaultIgnoreDirs = []string{
+var DefaultIgnoreDirs = []string{
 	// Version control
 	".git", ".svn", ".hg", ".bzr",
 
@@ -60,17 +64,17 @@ var defaultIgnoreDirs = []string{
 	".vscode", ".idea", ".eclipse", ".settings", ".fleet", ".history",
 }
 
-// venvIgnoreDirs are dependency trees that are skipped by default but are
+// VenvIgnoreDirs are dependency trees that are skipped by default but are
 // reversible with a single switch, because unlike build output they are large
 // enough that someone scanning a vendored tree may actually want them.
-var venvIgnoreDirs = []string{
+var VenvIgnoreDirs = []string{
 	".venv", "venv", "__pycache__", "node_modules",
 }
 
-// defaultIgnoreFiles are generated artifacts that are text, so the binary
+// DefaultIgnoreFiles are generated artifacts that are text, so the binary
 // sniff does not catch them. Compiled objects (.o, .so, .exe, .pyc) are
 // deliberately absent: those are already binary and skipped as such.
-var defaultIgnoreFiles = []string{
+var DefaultIgnoreFiles = []string{
 	// Minified bundles and source maps
 	"*.min.js", "*.min.mjs", "*.min.css", "*.map",
 
@@ -83,8 +87,8 @@ var defaultIgnoreFiles = []string{
 }
 
 var (
-	defaultIgnoreDirSet = nameSet(defaultIgnoreDirs)
-	venvIgnoreDirSet    = nameSet(venvIgnoreDirs)
+	defaultIgnoreDirSet = nameSet(DefaultIgnoreDirs)
+	venvIgnoreDirSet    = nameSet(VenvIgnoreDirs)
 )
 
 // nameSet turns a list of exact names into a lookup set.
@@ -124,20 +128,20 @@ var treeSecretPatterns = []string{
 // `tree -I` expects. Deriving it here means the banner and the walker read one
 // list instead of a hand-copied regex.
 //
-// The two are not fully equivalent. shouldSkip consults cfg: --include lifts a
+// The two are not fully equivalent. ShouldSkip consults cfg: --include lifts a
 // default directory, and it also drops the output file and the running binary
 // by absolute path. treeIgnorePattern sees neither, so under --include the
 // banner can omit a directory the dump includes. filterTreeLine re-applies
-// isSecretFilename per line, which catches most of the remaining drift, but a
-// lifted directory is still missing from the banner.
+// classify.IsSecretFilename per line, which catches most of the remaining
+// drift, but a lifted directory is still missing from the banner.
 //
 // One pattern also has to serve two matchers, which differ in syntax. `tree -I`
 // applies fnmatch-style globs to each path component, while Go's regexp wants
 // `.pem` rather than a leading `*.pem`. treeIgnorePatternRe is the Go-side
 // rewrite; it exists only for the tests and ships unused.
 var treeIgnorePattern = strings.Join(append(
-	append(append([]string{}, defaultIgnoreDirs...), venvIgnoreDirs...),
-	append(append([]string{}, defaultIgnoreFiles...), treeSecretPatterns...)...,
+	append(append([]string{}, DefaultIgnoreDirs...), VenvIgnoreDirs...),
+	append(append([]string{}, DefaultIgnoreFiles...), treeSecretPatterns...)...,
 ), "|")
 
 // treeIgnorePatternRe is treeIgnorePattern rewritten for Go's regexp engine, so
@@ -150,7 +154,7 @@ var treeIgnorePatternRe = regexp.MustCompile(
 func filterTreeLine(line string) bool {
 	if idx := strings.Index(line, " -> "); idx >= 0 {
 		target := strings.TrimSpace(line[idx+4:])
-		return isSecretFilename(filepath.Base(target))
+		return classify.IsSecretFilename(filepath.Base(target))
 	}
 	name := line
 	for _, sep := range []string{"├── ", "└── ", "│   "} {
@@ -162,7 +166,7 @@ func filterTreeLine(line string) bool {
 	if idx := strings.IndexByte(name, '/'); idx >= 0 {
 		return false
 	}
-	return isSecretFilename(name)
+	return classify.IsSecretFilename(name)
 }
 
 // treeLineIsSecret reports whether one line of `tree` output has to be dropped
@@ -233,14 +237,14 @@ func streamTreeOutput(writer io.Writer, r io.Reader) (produced bool) {
 	return produced
 }
 
-// tryPrintTree attempts to print a directory tree using the 'tree' command if available.
+// TryPrintTree attempts to print a directory tree using the 'tree' command if available.
 // It filters out secret files and directories from the output.
 //
 // tree's output is streamed through a pipe instead of being collected in a
 // buffer: on a large tree that buffer, and the []string it was split into, were
 // the only unbounded allocation in the tool, and they existed only to decorate
 // the dump with a directory banner.
-func tryPrintTree(writer io.Writer, roots []string) {
+func TryPrintTree(writer io.Writer, roots []string) {
 	bin, err := exec.LookPath("tree")
 	if err != nil {
 		return
@@ -283,15 +287,15 @@ func tryPrintTree(writer io.Writer, roots []string) {
 // SKIP LOGIC (unified = single source of truth)
 //
 
-// shouldSkip determines if a file or directory should be skipped during traversal.
+// ShouldSkip determines if a file or directory should be skipped during traversal.
 // It checks inode conflicts, built-in skip patterns, user exclusions, and secret files.
-func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
+func ShouldSkip(path string, d os.DirEntry, cfg *config.Config) bool {
 	base := d.Name()
 
-	if cfg.stdoutInode != 0 || cfg.outputInode != 0 || cfg.exeInode != 0 {
+	if cfg.StdoutInode != 0 || cfg.OutputInode != 0 || cfg.ExeInode != 0 {
 		if fi, err := os.Stat(path); err == nil {
-			if ino := getInode(fi); ino != 0 &&
-				(ino == cfg.stdoutInode || ino == cfg.outputInode || ino == cfg.exeInode) {
+			if ino := fs.GetInode(fi); ino != 0 &&
+				(ino == cfg.StdoutInode || ino == cfg.OutputInode || ino == cfg.ExeInode) {
 				return true
 			}
 		}
@@ -319,18 +323,18 @@ func shouldSkip(path string, d os.DirEntry, cfg *Config) bool {
 		if cfg.IgnoreVenv && venvIgnoreDirSet[base] {
 			return true
 		}
-		if matchesAnyPattern(base, defaultIgnoreFiles) {
+		if matchesAnyPattern(base, DefaultIgnoreFiles) {
 			return true
 		}
 	}
 
-	if len(cfg.excludeAbsPaths) > 0 {
-		if abs, err := filepath.Abs(path); err == nil && cfg.excludeAbsPaths[abs] {
+	if len(cfg.ExcludeAbsPaths) > 0 {
+		if abs, err := filepath.Abs(path); err == nil && cfg.ExcludeAbsPaths[abs] {
 			return true
 		}
 	}
 
-	if isSecretFilename(base) {
+	if classify.IsSecretFilename(base) {
 		return true
 	}
 

@@ -1,7 +1,7 @@
 // Tests for the streamed `tree` banner: the bytes it writes, the lines it
 // drops, and the memory it is not allowed to spend.
 
-package main
+package ignore
 
 import (
 	"fmt"
@@ -237,7 +237,7 @@ func TestTryPrintTreeDropsSecretsAndKeepsTheReport(t *testing.T) {
 	t.Setenv("FAKE_TREE_LINES", "40")
 
 	var got strings.Builder
-	tryPrintTree(&got, []string{"."})
+	TryPrintTree(&got, []string{"."})
 
 	want := bufferedBanner(fakeTreeOutput(t, 40))
 	if got.String() != want {
@@ -275,7 +275,7 @@ func TestTryPrintTreeNoOutputStillBanners(t *testing.T) {
 	fakeTree(t, "exit 3\n")
 
 	var got strings.Builder
-	tryPrintTree(&got, []string{".", "."})
+	TryPrintTree(&got, []string{".", "."})
 
 	if got.String() != "\n\n" {
 		t.Errorf("banner for a failing tree = %q, want %q (one blank line, then the closing one)", got.String(), "\n\n")
@@ -289,7 +289,7 @@ func TestTryPrintTreeStopsAfterAFailedRoot(t *testing.T) {
 awk -v n="$FAKE_TREE_LINES" 'BEGIN{ for (i=0;i<n;i++) print "├── file" i ".txt" }'`)
 
 	var got strings.Builder
-	tryPrintTree(&got, []string{".", "."})
+	TryPrintTree(&got, []string{".", "."})
 
 	if strings.Contains(got.String(), "file0.txt") {
 		t.Errorf("the second root was rendered after the first failed:\n%s", got.String())
@@ -302,7 +302,7 @@ func TestTryPrintTreeWithoutTree(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
 	var got strings.Builder
-	tryPrintTree(&got, []string{"."})
+	TryPrintTree(&got, []string{"."})
 
 	if got.String() != "" {
 		t.Errorf("wrote %q with no tree on PATH, want nothing", got.String())
@@ -318,7 +318,7 @@ func TestTryPrintTreePeakHeapIsFlat(t *testing.T) {
 	fakeTree(t, awkTreeLines)
 
 	t.Setenv("FAKE_TREE_LINES", "100")
-	small := peakHeapDuring(func() { tryPrintTree(io.Discard, []string{"."}) })
+	small := peakHeapDuring(func() { TryPrintTree(io.Discard, []string{"."}) })
 
 	// 400k lines is roughly 7.7 MB of tree output. Collected into a buffer and
 	// split, that is 7.7 MB of buffer plus 6.4 MB of line headers, and it shows
@@ -326,7 +326,7 @@ func TestTryPrintTreePeakHeapIsFlat(t *testing.T) {
 	// the collector lets accumulate between cycles rather than anything the
 	// banner holds.
 	t.Setenv("FAKE_TREE_LINES", "400000")
-	large := peakHeapDuring(func() { tryPrintTree(io.Discard, []string{"."}) })
+	large := peakHeapDuring(func() { TryPrintTree(io.Discard, []string{"."}) })
 
 	const slack = 6 << 20 // measured at 48 MB with the buffered version
 	if large > small+slack {
@@ -346,7 +346,7 @@ func TestTryPrintTreeWriterFailureCannotDeadlock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		tryPrintTree(&countingFailWriter{}, []string{"."})
+		TryPrintTree(&countingFailWriter{}, []string{"."})
 	}()
 
 	select {
